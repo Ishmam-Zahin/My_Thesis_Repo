@@ -1,12 +1,8 @@
 import torch
-from torch import nn
 from torchvision import transforms
-import numpy
 import argparse
 from pathlib import Path
 from PIL import Image
-import matplotlib.pyplot as plt
-from torchinfo import summary
 from tqdm import tqdm
 
 def get_transforms():
