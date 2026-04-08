@@ -1,0 +1,8 @@
+python train.py \
+--train-path '/home/zahin/Desktop/My_Thesis_Repo/datasets/FaceForensics++' \
+--val-path '/home/zahin/Desktop/My_Thesis_Repo/datasets/UADFV' \
+--vit-name 'dinov2_vits14' \
+--epochs 1 \
+--batch-size 1 \
+--lr 0.0001 \
+--checkpoint-dir '/home/zahin/Desktop/My_Thesis_Repo/checkpoints'

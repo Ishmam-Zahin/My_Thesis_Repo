@@ -15,6 +15,7 @@ def get_transforms():
 def load_paths(root):
     paths = list(root.glob('**/frames/*/*.png'))
     paths.sort()
+    print(len(paths))
     return paths
 
 def load_image(path):
@@ -149,7 +150,10 @@ def main():
             features = vit.forward_features(img_t)['x_norm_patchtokens'].cpu().squeeze()
         adj = create_adjacency_matrix(features)
         save_path = get_save_path(path, vit_name)
-        torch.save(adj, save_path)
+        # torch.save(adj, save_path)
+        print(f'matrix shape: {adj.shape} | type: {adj.dtype}')
+        print(f'features shape: {features.shape} | type: {features.dtype}')
+        break
     
 
     print('finished!!!')
