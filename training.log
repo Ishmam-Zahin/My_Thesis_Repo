@@ -2,3 +2,55 @@
 2026-04-08 20:06:23,484 | INFO | using MLP layer as FFN
 2026-04-08 20:08:57,990 | INFO | === Training Started ===
 2026-04-08 20:09:01,208 | INFO | using MLP layer as FFN
+2026-04-08 20:17:53,429 | INFO | === Training Started ===
+2026-04-08 20:17:56,963 | INFO | using MLP layer as FFN
+2026-04-11 15:43:36,097 | INFO | === Training Started ===
+2026-04-11 15:43:36,099 | INFO | Current device: cpu
+2026-04-11 15:43:36,103 | INFO | Total train videos: 0
+2026-04-11 15:43:36,104 | INFO | Total val videos:   0
+2026-04-11 15:44:50,343 | INFO | === Training Started ===
+2026-04-11 15:44:50,344 | INFO | Current device: cpu
+2026-04-11 15:44:50,345 | INFO | Total train videos: 0
+2026-04-11 15:44:50,345 | INFO | Total val videos:   0
+2026-04-11 15:46:10,340 | INFO | === Training Started ===
+2026-04-11 15:46:10,340 | INFO | Current device: cpu
+2026-04-11 15:46:10,341 | INFO | Total train videos: 0
+2026-04-11 15:46:10,341 | INFO | Total val videos:   0
+2026-04-11 15:46:32,841 | INFO | === Training Started ===
+2026-04-11 15:46:32,841 | INFO | Current device: cpu
+2026-04-11 15:46:32,842 | INFO | Total train videos: 0
+2026-04-11 15:46:32,842 | INFO | Total val videos:   0
+2026-04-11 15:47:24,148 | INFO | === Training Started ===
+2026-04-11 15:47:24,148 | INFO | Current device: cpu
+2026-04-11 15:47:24,150 | INFO | Total train videos: 0
+2026-04-11 15:47:24,150 | INFO | Total val videos:   0
+2026-04-11 15:49:32,667 | INFO | === Training Started ===
+2026-04-11 15:49:32,667 | INFO | Current device: cpu
+2026-04-11 15:49:35,346 | INFO | Subtype=c23                  | Total= 8062 | Train= 6450 | Val= 1612
+2026-04-11 15:49:35,435 | INFO | Total train videos: 6450
+2026-04-11 15:49:35,436 | INFO | Total val videos:   1612
+2026-04-11 15:50:14,354 | INFO | === Training Started ===
+2026-04-11 15:50:14,354 | INFO | Current device: cpu
+2026-04-11 15:50:17,619 | INFO | Subtype=c23                  | Total= 8062 | Train= 6450 | Val= 1612
+2026-04-11 15:50:17,658 | INFO | Subtype=c23                  | Total= 1362 | Train= 1090 | Val=  272
+2026-04-11 15:50:17,738 | INFO | Total train videos: 7540
+2026-04-11 15:50:17,739 | INFO | Total val videos:   1884
+2026-04-11 15:52:11,760 | INFO | === Training Started ===
+2026-04-11 15:52:11,760 | INFO | Current device: cpu
+2026-04-11 15:52:15,000 | INFO | Subtype=c23                  | Total= 8062 | Train= 6450 | Val= 1612
+2026-04-11 15:52:15,040 | INFO | Subtype=c23                  | Total= 1362 | Train= 1090 | Val=  272
+2026-04-11 15:52:15,119 | INFO | Total train videos: 7540
+2026-04-11 15:52:15,119 | INFO | Total val videos:   1884
+2026-04-11 15:52:29,959 | INFO | === Training Started ===
+2026-04-11 15:52:29,960 | INFO | Current device: cpu
+2026-04-11 15:52:33,162 | INFO | Subtype=c23                  | Total= 8062 | Train= 6450 | Val= 1612
+2026-04-11 15:52:33,202 | INFO | Subtype=c23                  | Total= 1362 | Train= 1090 | Val=  272
+2026-04-11 15:52:33,281 | INFO | Total train videos: 7540
+2026-04-11 15:52:33,281 | INFO | Total val videos:   1884
+2026-04-11 15:53:08,823 | INFO | === Training Started ===
+2026-04-11 15:53:08,823 | INFO | Current device: cpu
+2026-04-11 15:53:12,225 | INFO | Subtype=c23                  | Total= 8062 | Train= 6450 | Val= 1612
+2026-04-11 15:53:12,264 | INFO | Subtype=c23                  | Total= 1362 | Train= 1090 | Val=  272
+2026-04-11 15:53:12,345 | INFO | Total train videos: 7540
+2026-04-11 15:53:12,345 | INFO | Total val videos:   1884
+2026-04-11 15:53:13,394 | INFO | using MLP layer as FFN
