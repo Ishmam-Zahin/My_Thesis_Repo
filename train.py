@@ -1,3 +1,5 @@
+# Full train.py with Early Stopping + vit-name + original features restored
+
 import argparse
 import logging
 import os
@@ -17,7 +19,7 @@ from tqdm import tqdm
 from torchinfo import summary
 from zahin_model_video import MyModel
 
-from create_graph import create_frame_graph  # if you keep create_frame_graph in another file, update this import
+from create_graph import create_frame_graph
 
 
 # ====================== Logging Setup ======================
@@ -35,12 +37,9 @@ def setup_logging(log_file="training.log"):
 
 # ====================== Frame Sampling ======================
 def sample_frames(frame_paths, num_frames):
-    """
-    Sample num_frames from a video folder at equal intervals.
-    If the folder has fewer frames than requested, indices may repeat.
-    """
     frame_paths = sorted(frame_paths)
     total = len(frame_paths)
+
     if total == 0:
         raise ValueError("Empty frame folder found.")
 
@@ -55,32 +54,18 @@ def sample_frames(frame_paths, num_frames):
 
 # ====================== Video Discovery + Split ======================
 def get_video_groups(root):
-    """
-    Returns grouped video folders by subtype so that splitting is done
-    separately inside each subtype, avoiding leakage.
-
-    Example groups:
-      manipulated_sequences/deepfakedetection/frames/<video_id>/
-      manipulated_sequences/neuraltexture/frames/<video_id>/
-      original_sequences/actors/frames/<video_id>/
-      original_sequences/youtube/frames/<video_id>/
-    """
     root = Path(root)
     groups = defaultdict(list)
 
     candidates = []
     candidates += list(root.glob("manipulated_sequences/*/c23/frames/*"))
     candidates += list(root.glob("original_sequences/*/c23/frames/*"))
-    # print(len(candidates))
 
     for video_dir in candidates:
         if not video_dir.is_dir():
             continue
 
-        # subtype name: deepfakedetection / neuraltexture / actors / youtube / etc.
         subtype = video_dir.parent.parent.name
-
-        # label from the top-level folder
         label = 1 if "manipulated_sequences" in str(video_dir) else 0
 
         frame_paths = sorted(video_dir.glob("*.png"))
@@ -93,10 +78,6 @@ def get_video_groups(root):
 
 
 def split_train_val_by_group(root, num_frames, val_ratio=0.2, seed=42):
-    """
-    Split each subtype separately with 80/20 ratio.
-    This prevents leakage across train/val.
-    """
     rng = random.Random(seed)
     groups = get_video_groups(root)
 
@@ -134,15 +115,14 @@ def split_train_val_by_group(root, num_frames, val_ratio=0.2, seed=42):
 # ====================== Dataset ======================
 class FFPPVideoDataset(torch.utils.data.Dataset):
     def __init__(self, samples, transform=None):
-        super().__init__()
         self.samples = samples
         self.transform = transform
 
     def __len__(self):
         return len(self.samples)
 
-    def load_item(self, sample):
-        frame_paths, label = sample
+    def __getitem__(self, index):
+        frame_paths, label = self.samples[index]
 
         frames = []
         for fp in frame_paths:
@@ -150,12 +130,9 @@ class FFPPVideoDataset(torch.utils.data.Dataset):
             img_t = self.transform(img) if self.transform else img
             frames.append(img_t)
 
-        video = torch.stack(frames, dim=0)  # [T, 3, H, W]
+        video = torch.stack(frames, dim=0)
         label = torch.tensor(label, dtype=torch.long)
         return video, label
-
-    def __getitem__(self, index):
-        return self.load_item(self.samples[index])
 
 
 def get_transforms():
@@ -169,19 +146,25 @@ def get_transforms():
 
 # ====================== Main ======================
 def main():
-    parser = argparse.ArgumentParser(description="Deepfake Detection Training on FF++")
-    parser.add_argument("--data-root", type=str, required=True,
-                        help="Path to FF++ root folder")
+    parser = argparse.ArgumentParser(description="Deepfake Detection Training")
+
+    # Original args
+    parser.add_argument("--data-root", type=str, required=True)
     parser.add_argument("--vit-name", type=str, default="dinov2_vits14")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
-    parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
-    parser.add_argument("--num-frames", type=int, default=8, help="Number of frames sampled per video")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--num-frames", type=int, default=8)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--knn-k", type=int, default=8)
+
+    # Early stopping
+    parser.add_argument("--early-stop-patience", type=int, default=3)
+    parser.add_argument("--early-stop-delta", type=float, default=1e-3)
+
     args = parser.parse_args()
 
     setup_logging()
@@ -193,22 +176,16 @@ def main():
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    # ----------------- Data splitting -----------------
+    # ----------------- Data -----------------
     train_samples, val_samples = split_train_val_by_group(
-        root=args.data_root,
-        num_frames=args.num_frames,
-        val_ratio=args.val_ratio,
-        seed=args.seed
+        args.data_root, args.num_frames, args.val_ratio, args.seed
     )
 
     logging.info(f"Total train videos: {len(train_samples)}")
     logging.info(f"Total val videos:   {len(val_samples)}")
 
-    train_dataset = FFPPVideoDataset(train_samples, transform=get_transforms())
-    val_dataset = FFPPVideoDataset(val_samples, transform=get_transforms())
-
     train_loader = DataLoader(
-        train_dataset,
+        FFPPVideoDataset(train_samples, get_transforms()),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=4,
@@ -216,24 +193,30 @@ def main():
     )
 
     val_loader = DataLoader(
-        val_dataset,
+        FFPPVideoDataset(val_samples, get_transforms()),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=4,
         pin_memory=torch.cuda.is_available()
     )
 
-
     # ----------------- Model -----------------
     model = MyModel(vit_name=args.vit_name).to(device)
 
+    edge_index = create_frame_graph(
+        T=args.num_frames,
+        N=256,
+        K=args.knn_k
+    ).to(device)
+
     if torch.cuda.is_available():
-        summary(model, input_size=(1, args.num_frames, 3, 224, 224), device="cuda")
+        summary(
+            model,
+            input_data=(torch.randn(1, args.num_frames, 3, 224, 224).to(device), edge_index),
+            device="cuda"
+        )
 
-    # Create graph once for the fixed number of frames
-    edge_index = create_frame_graph(T=args.num_frames, N=256, K=args.knn_k).to(device)
-
-    # ----------------- Optimizer, Loss, Scheduler -----------------
+    # ----------------- Optimizer -----------------
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
     criterion = nn.CrossEntropyLoss()
 
@@ -241,127 +224,84 @@ def main():
         optimizer,
         mode="max",
         factor=0.5,
-        patience=3,
-        threshold=0.001,
-        min_lr=1e-6
+        patience=3
     )
 
-    # ----------------- Checkpointing -----------------
+    # ----------------- Checkpoint -----------------
     os.makedirs(args.checkpoint_dir, exist_ok=True)
-    checkpoint_path = Path(args.checkpoint_dir) / "latest_checkpoint.pth"
     best_model_path = Path(args.checkpoint_dir) / "best_model.pth"
 
-    start_epoch = 0
-    best_auc = 0.0
+    best_val_auc = 0.0
+    epochs_no_improve = 0
 
-    if args.resume and checkpoint_path.exists():
-        logging.info(f"Resuming from checkpoint: {checkpoint_path}")
-        ckpt = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(ckpt["model_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-        start_epoch = ckpt["epoch"] + 1
-        best_auc = ckpt.get("best_auc", 0.0)
-        logging.info(f"Resumed from epoch {start_epoch} | Best AUC so far: {best_auc:.4f}")
-
-    # ====================== Training Loop ======================
-    for epoch in range(start_epoch, args.epochs):
+    # ====================== Training ======================
+    for epoch in range(args.epochs):
         model.train()
-        train_loss = 0.0
-        all_train_preds = []
-        all_train_labels = []
+        train_preds, train_labels = [], []
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]")
-        for videos, labels in pbar:
-            videos = videos.to(device, non_blocking=True)   # [B, T, 3, H, W]
-            labels = labels.to(device, non_blocking=True)
+        for videos, labels in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]"):
+            videos = videos.to(device)
+            labels = labels.to(device)
 
             optimizer.zero_grad()
-            logits = model(videos, edge_index)              # IMPORTANT: pass edge_index
+            logits = model(videos, edge_index)
             loss = criterion(logits, labels)
             loss.backward()
             optimizer.step()
 
-            train_loss += loss.item()
-
             probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
-            all_train_preds.extend(probs)
-            all_train_labels.extend(labels.detach().cpu().numpy())
+            train_preds.extend(probs)
+            train_labels.extend(labels.cpu().numpy())
 
-            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+        train_auc = roc_auc_score(train_labels, train_preds)
 
         # ----------------- Validation -----------------
         model.eval()
-        val_loss = 0.0
-        all_val_preds = []
-        all_val_labels = []
+        val_preds, val_labels = [], []
 
-        with torch.inference_mode():
-            for videos, labels in tqdm(val_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Val]"):
-                videos = videos.to(device, non_blocking=True)
-                labels = labels.to(device, non_blocking=True)
+        with torch.no_grad():
+            for videos, labels in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]"):
+                videos = videos.to(device)
+                labels = labels.to(device)
 
                 logits = model(videos, edge_index)
-                loss = criterion(logits, labels)
+                probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
 
-                val_loss += loss.item()
+                val_preds.extend(probs)
+                val_labels.extend(labels.cpu().numpy())
 
-                probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
-                all_val_preds.extend(probs)
-                all_val_labels.extend(labels.detach().cpu().numpy())
-
-        # ----------------- Metrics -----------------
-        train_loss /= max(1, len(train_loader))
-        val_loss /= max(1, len(val_loader))
-
-        train_pred_bin = (np.array(all_train_preds) > 0.5).astype(int)
-        val_pred_bin = (np.array(all_val_preds) > 0.5).astype(int)
-
-        train_acc = accuracy_score(all_train_labels, train_pred_bin)
-        val_acc = accuracy_score(all_val_labels, val_pred_bin)
-
-        try:
-            train_auc = roc_auc_score(all_train_labels, all_train_preds)
-        except ValueError:
-            train_auc = 0.5
-
-        try:
-            val_auc = roc_auc_score(all_val_labels, all_val_preds)
-        except ValueError:
-            val_auc = 0.5
+        val_auc = roc_auc_score(val_labels, val_preds)
 
         logging.info(
-            f"Epoch {epoch+1:3d} | "
-            f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-            f"Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f} | "
-            f"Train AUC: {train_auc:.4f} | Val AUC: {val_auc:.4f}"
+            f"Epoch {epoch+1} | Train AUC: {train_auc:.4f} | Val AUC: {val_auc:.4f}"
         )
 
-        # ----------------- Scheduler -----------------
         scheduler.step(val_auc)
 
-        # ----------------- Checkpointing -----------------
-        torch.save({
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "best_auc": best_auc,
-            "args": vars(args),
-        }, checkpoint_path)
+        # ----------------- Early Stopping -----------------
+        if val_auc > best_val_auc + args.early_stop_delta:
+            best_val_auc = val_auc
+            epochs_no_improve = 0
 
-        if val_auc > best_auc:
-            best_auc = val_auc
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "val_auc": val_auc,
                 "args": vars(args),
             }, best_model_path)
+
             logging.info(f"New best model saved! Val AUC = {val_auc:.4f}")
 
+        else:
+            epochs_no_improve += 1
+            logging.info(f"No improvement for {epochs_no_improve} epochs")
+
+            if epochs_no_improve >= args.early_stop_patience:
+                logging.info("Early stopping triggered!")
+                break
+
     logging.info("=== Training Finished ===")
-    logging.info(f"Best Validation AUC: {best_auc:.4f}")
+    logging.info(f"Best Validation AUC: {best_val_auc:.4f}")
 
 
 if __name__ == "__main__":

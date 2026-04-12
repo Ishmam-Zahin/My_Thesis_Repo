@@ -54,3 +54,97 @@
 2026-04-11 15:53:12,345 | INFO | Total train videos: 7540
 2026-04-11 15:53:12,345 | INFO | Total val videos:   1884
 2026-04-11 15:53:13,394 | INFO | using MLP layer as FFN
+2026-04-11 16:35:07,922 | INFO | === Training Started ===
+2026-04-11 16:35:07,923 | INFO | Current device: cuda
+2026-04-11 16:35:11,667 | INFO | Subtype=c23                  | Total= 8062 | Train= 6450 | Val= 1612
+2026-04-11 16:35:11,721 | INFO | Subtype=c23                  | Total= 1362 | Train= 1090 | Val=  272
+2026-04-11 16:35:11,830 | INFO | Total train videos: 7540
+2026-04-11 16:35:11,830 | INFO | Total val videos:   1884
+2026-04-11 16:35:12,904 | INFO | using MLP layer as FFN
+2026-04-11 16:38:49,184 | INFO | === Training Started ===
+2026-04-11 16:38:49,184 | INFO | Current device: cuda
+2026-04-11 16:38:52,843 | INFO | Subtype=c23                  | Total= 8062 | Train= 6450 | Val= 1612
+2026-04-11 16:38:52,899 | INFO | Subtype=c23                  | Total= 1362 | Train= 1090 | Val=  272
+2026-04-11 16:38:53,006 | INFO | Total train videos: 7540
+2026-04-11 16:38:53,006 | INFO | Total val videos:   1884
+2026-04-11 16:38:53,278 | INFO | using MLP layer as FFN
+2026-04-11 16:47:23,531 | INFO | Epoch   1 | Train Loss: 0.4189 | Val Loss: 0.4081 | Train Acc: 0.8544 | Val Acc: 0.8556 | Train AUC: 0.5457 | Val AUC: 0.5905
+2026-04-11 16:47:23,765 | INFO | New best model saved! Val AUC = 0.5905
+2026-04-11 16:56:12,134 | INFO | Epoch   2 | Train Loss: 0.4077 | Val Loss: 0.4027 | Train Acc: 0.8554 | Val Acc: 0.8556 | Train AUC: 0.5895 | Val AUC: 0.6219
+2026-04-11 16:56:12,882 | INFO | New best model saved! Val AUC = 0.6219
+2026-04-11 17:05:01,142 | INFO | Epoch   3 | Train Loss: 0.4019 | Val Loss: 0.4096 | Train Acc: 0.8557 | Val Acc: 0.8546 | Train AUC: 0.6269 | Val AUC: 0.6609
+2026-04-11 17:05:01,897 | INFO | New best model saved! Val AUC = 0.6609
+2026-04-11 17:13:49,976 | INFO | Epoch   4 | Train Loss: 0.3928 | Val Loss: 0.3887 | Train Acc: 0.8549 | Val Acc: 0.8556 | Train AUC: 0.6627 | Val AUC: 0.6900
+2026-04-11 17:13:50,715 | INFO | New best model saved! Val AUC = 0.6900
+2026-04-11 17:22:38,897 | INFO | Epoch   5 | Train Loss: 0.3722 | Val Loss: 0.3700 | Train Acc: 0.8542 | Val Acc: 0.8556 | Train AUC: 0.7254 | Val AUC: 0.7539
+2026-04-11 17:22:39,632 | INFO | New best model saved! Val AUC = 0.7539
+2026-04-11 17:31:27,787 | INFO | Epoch   6 | Train Loss: 0.3451 | Val Loss: 0.3537 | Train Acc: 0.8595 | Val Acc: 0.8530 | Train AUC: 0.7834 | Val AUC: 0.8031
+2026-04-11 17:31:28,505 | INFO | New best model saved! Val AUC = 0.8031
+2026-04-11 17:40:18,252 | INFO | Epoch   7 | Train Loss: 0.3282 | Val Loss: 0.3247 | Train Acc: 0.8626 | Val Acc: 0.8572 | Train AUC: 0.8125 | Val AUC: 0.8245
+2026-04-11 17:40:18,991 | INFO | New best model saved! Val AUC = 0.8245
+2026-04-11 17:49:16,302 | INFO | Epoch   8 | Train Loss: 0.3138 | Val Loss: 0.3459 | Train Acc: 0.8688 | Val Acc: 0.8620 | Train AUC: 0.8324 | Val AUC: 0.8472
+2026-04-11 17:49:17,095 | INFO | New best model saved! Val AUC = 0.8472
+2026-04-11 17:58:00,946 | INFO | Epoch   9 | Train Loss: 0.2953 | Val Loss: 0.2968 | Train Acc: 0.8741 | Val Acc: 0.8631 | Train AUC: 0.8557 | Val AUC: 0.8610
+2026-04-11 17:58:01,717 | INFO | New best model saved! Val AUC = 0.8610
+2026-04-11 18:06:42,616 | INFO | Epoch  10 | Train Loss: 0.2874 | Val Loss: 0.2954 | Train Acc: 0.8748 | Val Acc: 0.8694 | Train AUC: 0.8652 | Val AUC: 0.8649
+2026-04-11 18:06:43,334 | INFO | New best model saved! Val AUC = 0.8649
+2026-04-11 18:06:43,334 | INFO | === Training Finished ===
+2026-04-11 18:06:43,335 | INFO | Best Validation AUC: 0.8649
+2026-04-11 18:50:49,653 | INFO | === Training Started ===
+2026-04-11 18:50:49,653 | INFO | Current device: cuda
+2026-04-11 18:50:53,325 | INFO | Subtype=c23                  | Total= 8062 | Train= 6450 | Val= 1612
+2026-04-11 18:50:53,381 | INFO | Subtype=c23                  | Total= 1362 | Train= 1090 | Val=  272
+2026-04-11 18:50:53,482 | INFO | Total train videos: 7540
+2026-04-11 18:50:53,482 | INFO | Total val videos:   1884
+2026-04-11 18:50:53,741 | INFO | using MLP layer as FFN
+2026-04-11 18:59:09,775 | INFO | Epoch 1 | Train AUC: 0.5429 | Val AUC: 0.5843
+2026-04-11 18:59:10,093 | INFO | New best model saved! Val AUC = 0.5843
+2026-04-11 19:07:40,308 | INFO | Epoch 2 | Train AUC: 0.5799 | Val AUC: 0.6142
+2026-04-11 19:07:40,626 | INFO | New best model saved! Val AUC = 0.6142
+2026-04-11 19:16:12,392 | INFO | Epoch 3 | Train AUC: 0.6184 | Val AUC: 0.6442
+2026-04-11 19:16:12,721 | INFO | New best model saved! Val AUC = 0.6442
+2026-04-11 19:24:45,406 | INFO | Epoch 4 | Train AUC: 0.6426 | Val AUC: 0.6609
+2026-04-11 19:24:45,721 | INFO | New best model saved! Val AUC = 0.6609
+2026-04-11 19:33:19,470 | INFO | Epoch 5 | Train AUC: 0.6857 | Val AUC: 0.6966
+2026-04-11 19:33:19,792 | INFO | New best model saved! Val AUC = 0.6966
+2026-04-11 19:41:53,180 | INFO | Epoch 6 | Train AUC: 0.7261 | Val AUC: 0.7399
+2026-04-11 19:41:53,498 | INFO | New best model saved! Val AUC = 0.7399
+2026-04-11 19:50:27,625 | INFO | Epoch 7 | Train AUC: 0.7679 | Val AUC: 0.7733
+2026-04-11 19:50:27,936 | INFO | New best model saved! Val AUC = 0.7733
+2026-04-11 19:59:02,463 | INFO | Epoch 8 | Train AUC: 0.7926 | Val AUC: 0.8081
+2026-04-11 19:59:02,782 | INFO | New best model saved! Val AUC = 0.8081
+2026-04-11 20:07:37,082 | INFO | Epoch 9 | Train AUC: 0.8304 | Val AUC: 0.8294
+2026-04-11 20:07:37,410 | INFO | New best model saved! Val AUC = 0.8294
+2026-04-11 20:16:11,330 | INFO | Epoch 10 | Train AUC: 0.8447 | Val AUC: 0.8409
+2026-04-11 20:16:11,646 | INFO | New best model saved! Val AUC = 0.8409
+2026-04-11 20:24:46,347 | INFO | Epoch 11 | Train AUC: 0.8563 | Val AUC: 0.8544
+2026-04-11 20:24:46,665 | INFO | New best model saved! Val AUC = 0.8544
+2026-04-11 20:33:22,400 | INFO | Epoch 12 | Train AUC: 0.8700 | Val AUC: 0.8566
+2026-04-11 20:33:22,719 | INFO | New best model saved! Val AUC = 0.8566
+2026-04-11 20:41:57,704 | INFO | Epoch 13 | Train AUC: 0.8756 | Val AUC: 0.8633
+2026-04-11 20:41:58,026 | INFO | New best model saved! Val AUC = 0.8633
+2026-04-11 20:50:34,503 | INFO | Epoch 14 | Train AUC: 0.8902 | Val AUC: 0.8577
+2026-04-11 20:50:34,507 | INFO | No improvement for 1 epochs
+2026-04-11 20:59:10,286 | INFO | Epoch 15 | Train AUC: 0.8918 | Val AUC: 0.8664
+2026-04-11 20:59:10,604 | INFO | New best model saved! Val AUC = 0.8664
+2026-04-11 21:07:45,503 | INFO | Epoch 16 | Train AUC: 0.9051 | Val AUC: 0.8689
+2026-04-11 21:07:45,817 | INFO | New best model saved! Val AUC = 0.8689
+2026-04-11 21:16:20,671 | INFO | Epoch 17 | Train AUC: 0.9095 | Val AUC: 0.8732
+2026-04-11 21:16:20,987 | INFO | New best model saved! Val AUC = 0.8732
+2026-04-11 21:24:55,923 | INFO | Epoch 18 | Train AUC: 0.9157 | Val AUC: 0.8700
+2026-04-11 21:24:55,927 | INFO | No improvement for 1 epochs
+2026-04-11 21:33:31,940 | INFO | Epoch 19 | Train AUC: 0.9211 | Val AUC: 0.8754
+2026-04-11 21:33:32,255 | INFO | New best model saved! Val AUC = 0.8754
+2026-04-11 21:42:07,902 | INFO | Epoch 20 | Train AUC: 0.9274 | Val AUC: 0.8733
+2026-04-11 21:42:07,906 | INFO | No improvement for 1 epochs
+2026-04-11 21:50:44,265 | INFO | Epoch 21 | Train AUC: 0.9269 | Val AUC: 0.8818
+2026-04-11 21:50:44,580 | INFO | New best model saved! Val AUC = 0.8818
+2026-04-11 21:59:20,536 | INFO | Epoch 22 | Train AUC: 0.9354 | Val AUC: 0.8754
+2026-04-11 21:59:20,536 | INFO | No improvement for 1 epochs
+2026-04-11 22:07:56,229 | INFO | Epoch 23 | Train AUC: 0.9371 | Val AUC: 0.8750
+2026-04-11 22:07:56,233 | INFO | No improvement for 2 epochs
+2026-04-11 22:16:32,767 | INFO | Epoch 24 | Train AUC: 0.9427 | Val AUC: 0.8811
+2026-04-11 22:16:32,771 | INFO | No improvement for 3 epochs
+2026-04-11 22:16:32,771 | INFO | Early stopping triggered!
+2026-04-11 22:16:32,771 | INFO | === Training Finished ===
+2026-04-11 22:16:32,771 | INFO | Best Validation AUC: 0.8818

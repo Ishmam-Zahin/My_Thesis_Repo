@@ -12,3 +12,5 @@ datasets/*
 !datasets/.gitkeep
 vit_weights/*
 !vit_weights/.gitkeep
+checkpoints/*
+!checkpoints/.gitkeep
