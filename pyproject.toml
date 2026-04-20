@@ -4,11 +4,4 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "matplotlib>=3.10.8",
-    "numpy>=2.4.3",
-    "scikit-learn>=1.8.0",
-    "timm>=1.0.26",
-    "torch-geometric>=2.7.0",
-    "torchinfo>=1.8.0",
-]
+dependencies = []
