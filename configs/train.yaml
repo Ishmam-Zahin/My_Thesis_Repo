@@ -1,0 +1,75 @@
+# config.yaml
+# Configuration for train.py
+
+experiment:
+  name: deepfake_detection_ffpp
+  output_dir: runs/deepfake_detection_ffpp
+  log_file: training.log
+
+system:
+  seed: 42
+  device: cuda            # cuda | cpu
+  num_workers: 4
+  pin_memory: true
+
+data:
+  data_root: /path/to/ffpp_dataset
+  val_ratio: 0.20
+  num_frames: 8
+  image_size: 224
+  channels: 3
+
+model:
+  class_path: zahin_model_video.MyModel
+  vit_name: dinov2_vits14
+  num_classes: 2
+
+graph:
+  builder_path: create_graph.create_frame_graph
+  T: 8                  # normally same as data.num_frames
+  N: 256
+  knn_k: 8
+
+train:
+  epochs: 50
+  batch_size: 4
+  mixed_precision: false
+  gradient_clip_norm: null
+  resume: false
+
+optimizer:
+  name: Adam
+  lr: 0.0001
+  weight_decay: 0.00001
+
+loss:
+  name: CrossEntropyLoss
+
+scheduler:
+  name: ReduceLROnPlateau
+  mode: max
+  factor: 0.5
+  patience: 3
+  min_lr: 0.000001
+
+early_stopping:
+  patience: 3
+  delta: 0.001
+  monitor: val_auc
+  mode: max
+
+checkpoint:
+  dir: checkpoints
+  best_name: best_model.pth
+  save_best_only: true
+  save_last: true
+
+metrics:
+  - roc_auc
+  - accuracy
+
+logging:
+  level: INFO
+  console: true
+  file: true
+  tqdm: true
