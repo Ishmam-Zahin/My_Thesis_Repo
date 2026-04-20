@@ -1,92 +1,60 @@
+import json
 from pathlib import Path
-import numpy as np
-from sklearn.model_selection import train_test_split
-import random
+from helpers.my_dataset import MyDataset
 
+def load_json(json_path):
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    train_videos_paths = data['train']
+    test_videos_paths = data['test']
+    return (train_videos_paths, test_videos_paths)
 
-def load_video_paths(dataset_name, root):
-    dataset_path = Path(root, dataset_name)
-    video_paths = list(dataset_path.glob('**/frames/*'))
-    return video_paths
-
-def load_frames(video_paths, k = 8): # k = number of frames per video
-    frames_per_video_paths = []
-    for path in video_paths:
-        frames = sorted(path.glob('*'), key = lambda x: int(x.stem))
-        total = len(frames)
-        indexes = np.linspace(0, total - 1, k)
-        indexes = np.round(indexes).astype(np.int16)
-        selected = [frames[i] for i in indexes]
-        frames_per_video_paths.append(selected)
-    return frames_per_video_paths
-
-def determine_video_label(path):
-    path = str(path).lower()
+def determine_labels(path):
     real_words = ['real', 'original']
-    fake_words = ['fake', 'manipulated', 'synthesis']
+    fake_words = ['fake', 'manipulated']
+    path_str = str(path).lower()
 
     for word in real_words:
-        if word in path:
+        if word in path_str:
             return 0
     for word in fake_words:
-        if word in path:
+        if word in path_str:
             return 1
-    raise Exception('unknown label found!!!')
+    raise Exception('unable to determine video label')
 
-def video_groupping(video_paths, dataset_name):
-    groupped_videos_paths = dict()
-    for path in video_paths:
-        video_label = determine_video_label(path)
-        items = path.parts
-        index = items.index('frames')
-        group_label_index = index - 1
-        if dataset_name == 'FaceForensics++':
-            group_label_index -= 1
-        group_label = items[group_label_index]
-        if group_label not in groupped_videos_paths:
-            groupped_videos_paths[group_label] = [path]
-        else:
-            groupped_videos_paths[group_label].append(path)
-    return groupped_videos_paths
+def get_labels(videos_paths):
+    videos_labels = []
+    for video in videos_paths:
+        label = determine_labels(video[0])
+        videos_labels.append(label)
+    return videos_labels
 
-def split_dataset(groupped_videos_paths, test_size = 0.2, seed = 42):
-    X_train = []
-    X_test = []
-    for label in groupped_videos_paths:
-        paths = np.array(groupped_videos_paths[label])
-        X_train_local, X_test_local = train_test_split(
-            paths,
-            test_size = test_size,
-            random_state = seed,
-            shuffle = True,
-        )
-        X_train.extend(X_train_local)
-        X_test.extend(X_test_local)
-    random.seed(seed)
-    random.shuffle(X_train)
-    random.shuffle(X_test)
-    return (X_train, X_test)
+def get_dataset(
+        json_root,
+        dataset_name,
+        transform,
+):
+    json_path = Path(json_root, dataset_name + '.json')
+    train_videos_paths, test_videos_paths = load_json(json_path)
+    train_videos_labels = get_labels(train_videos_paths)
+    test_videos_labels = get_labels(test_videos_paths)
+    
+    if train_videos_paths:
+        train_dataset = MyDataset(train_videos_paths, train_videos_labels, transform = transform)
+        test_dataset = MyDataset(test_videos_paths, test_videos_labels, transform = transform)
+    else:
+        train_dataset = None
+        test_dataset = MyDataset(test_videos_paths, test_videos_labels, transform = transform)
+    
+    return (train_dataset, test_dataset)
+
 
 def main():
-    root = Path('/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/datasets')
-    name = 'FaceForensics++'
-    video_paths = load_video_paths(name, root)
-    groupped_videos_paths = video_groupping(video_paths, name)
-    X_train, X_test = split_dataset(groupped_videos_paths)
-    X_train = load_frames(X_train)
-    X_test = load_frames(X_test)
-    X_train = np.array(X_train)
-    X_test = np.array(X_test)
-
-    print(X_train.shape)
-    print(X_test.shape)
-    print(X_train[:5])
-
-
-
-
-
-
+    root = Path('/home/zahin/Desktop/My_Thesis_Repo/rearrange/dataset_json/FaceForensics++.json')
+    train_videos_paths, test_videos_paths = load_json(root)
+    train_videos_labels = get_labels(train_videos_paths)
+    test_videos_labels = get_labels(test_videos_paths)
+    
 
 if __name__ == "__main__":
     main()

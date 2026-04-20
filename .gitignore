@@ -14,3 +14,5 @@ vit_weights/*
 !vit_weights/.gitkeep
 checkpoints/*
 !checkpoints/.gitkeep
+logs/*
+!logs/.gitkeep
