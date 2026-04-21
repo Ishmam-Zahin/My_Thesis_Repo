@@ -9,12 +9,13 @@ import json
 
 def load_real_videos(root, dataset_name, seed=42):
     dataset_path = Path(root, dataset_name)
-    real_videos_folder_name = 'original_sequences'
-    if dataset_name == 'UADFV':
-        real_videos_folder_name = 'real'
 
-    dataset_real_videos_path = Path(dataset_path, real_videos_folder_name)
-    paths = list(dataset_real_videos_path.glob('**/frames/*'))
+    if dataset_name == 'FaceForensics++':
+        real_videos_folder_name = 'original_sequences'
+        dataset_real_videos_path = Path(dataset_path, real_videos_folder_name)
+        paths = list(dataset_real_videos_path.glob('**/frames/*'))
+    else:
+        paths = list(dataset_path.glob('**/frames/*'))
 
     random.seed(seed)
     random.shuffle(paths)
@@ -29,18 +30,17 @@ def split_real_videos(real_videos_paths, test_size=0.2, seed=42):
 
 
 def load_fake_videos(real_videos_paths, root, dataset_name, seed=42):
-    fake_videos_paths = []                                   # fixed typo
-    dataset_path = Path(root, dataset_name)
-    fake_videos_folder_name = 'manipulated_sequences'
-    if dataset_name == 'UADFV':
-        fake_videos_folder_name = 'fake'
+    fake_videos_paths = []
+    if dataset_name == 'FaceForensics++':
+        dataset_path = Path(root, dataset_name)
+        fake_videos_folder_name = 'manipulated_sequences'
 
-    dataset_fake_videos_path = Path(dataset_path, fake_videos_folder_name)
+        dataset_fake_videos_path = Path(dataset_path, fake_videos_folder_name)
 
-    for path in tqdm.tqdm(real_videos_paths):
-        video_label = path.stem
-        tmp = list(dataset_fake_videos_path.glob(f'**/frames/{video_label}_*'))
-        fake_videos_paths.extend(tmp)
+        for path in tqdm.tqdm(real_videos_paths):
+            video_label = path.stem
+            tmp = list(dataset_fake_videos_path.glob(f'**/frames/{video_label}_*'))
+            fake_videos_paths.extend(tmp)
 
     fake_videos_paths.extend(real_videos_paths)              # add real videos too
 
@@ -51,13 +51,18 @@ def load_fake_videos(real_videos_paths, root, dataset_name, seed=42):
 
 def load_frames(video_paths, k=8):
     frames_per_video_paths = []
+    skip = 0
     for path in tqdm.tqdm(video_paths):
         frames = sorted(path.glob('*'), key=lambda x: int(x.stem))
         total = len(frames)
+        if total < k:
+            skip += 1
+            continue
         indexes = np.linspace(0, total - 1, k)
         indexes = np.round(indexes).astype(np.int16)
         selected = [frames[i] for i in indexes]
         frames_per_video_paths.append(selected)
+    print(f'total video skipped due to less frames: {skip}')
     return frames_per_video_paths
 
 

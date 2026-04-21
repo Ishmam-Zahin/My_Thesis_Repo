@@ -11,7 +11,7 @@ def load_json(json_path):
 
 def determine_labels(path):
     real_words = ['real', 'original']
-    fake_words = ['fake', 'manipulated']
+    fake_words = ['fake', 'manipulated', 'synthesis']
     path_str = str(path).lower()
 
     for word in real_words:
