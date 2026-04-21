@@ -3,8 +3,10 @@ data:
   dataset_name: "FaceForensics++"
 
 model:
+  model_path: "/home/zahin/Desktop/My_Thesis_Repo/models/model2.py"
+  model_class: "MyModel"
   vit_name: "dinov2_vits14"
-  pretrained_path: null # set to a .pth path if you want to load weights
+  pretrained_path: null
 
 training:
   epochs: 1
