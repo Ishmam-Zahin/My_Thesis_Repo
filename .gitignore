@@ -16,3 +16,7 @@ checkpoints/*
 !checkpoints/.gitkeep
 logs/*
 !logs/.gitkeep
+configs/train.yaml
+configs/test.yaml
+rearrange/dataset_json/*
+!rearrange/dataset_json/.gitkeep
