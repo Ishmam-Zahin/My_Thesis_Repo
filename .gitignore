@@ -20,3 +20,5 @@ configs/train.yaml
 configs/test.yaml
 rearrange/dataset_json/*
 !rearrange/dataset_json/.gitkeep
+test_logs/*
+!test_logs/.gitkeep

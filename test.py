@@ -1,38 +1,64 @@
 import argparse
+import importlib.util
+import json
 import logging
-import os
+import random
+import yaml
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
-
 import numpy as np
 import torch
-from PIL import Image
-from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, classification_report
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
+import torch.nn as nn
+from sklearn.metrics import accuracy_score, roc_auc_score
+from torch.utils.data import DataLoader
 from tqdm import tqdm
+from torchvision import transforms
 
-from zahin_model_video import MyModel
+# ====================== Your existing modules ======================
+from helpers.dataset_loader import get_dataset
 from create_graph import create_frame_graph
 
+# ====================== Dynamic Model Loader ======================
+def load_model_class(model_path: str, class_name: str):
+    """Dynamically load a model class from a .py file path (same as train.py)."""
+    model_path = Path(model_path).resolve()
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+    spec = importlib.util.spec_from_file_location("dynamic_model_module", str(model_path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if not hasattr(module, class_name):
+        raise AttributeError(f"Class '{class_name}' not found in {model_path}")
+    logging.info(f"✅ Dynamically loaded model class '{class_name}' from {model_path}")
+    return getattr(module, class_name)
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
-REAL_KEYWORDS = {"real", "original", "bonafide", "genuine", "authentic", "Celeb-real", "YouTube-real"}
-FAKE_KEYWORDS = {"fake", "faked", "manipulated", "synthesis", "synthesized", "deepfake", "spoof", "Celeb-synthesis"}
-
-
-# -------------------------- Logging --------------------------
-def setup_logging():
+# ====================== Logging Setup ======================
+def setup_run_logging(log_dir: str, run_name: str):
+    """Create timestamped folder + log file + hyperparams.json (same as train.py)."""
+    run_dir = Path(log_dir) / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_file = run_dir / "training.log"  # keep same filename for consistency
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
-        handlers=[logging.StreamHandler()]
+        handlers=[
+            logging.FileHandler(log_file, mode="a", encoding="utf-8"),
+            logging.StreamHandler()
+        ],
+        force=True
     )
+    logging.info(f"=== Test Run Started: {run_name} ===")
+    return run_dir
 
+def save_hyperparams(config: dict, run_dir: Path):
+    """Save full config as JSON for reproducibility (same as train.py)."""
+    hyperparams_path = run_dir / "hyperparams.json"
+    with open(hyperparams_path, 'w') as f:
+        json.dump(config, f, indent=4)
+    logging.info(f"Hyperparameters saved to {hyperparams_path}")
 
-# -------------------------- Utils --------------------------
 def get_transforms():
-    # Matches train.py exactly
+    """Same transforms as train.py."""
     return transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -40,280 +66,154 @@ def get_transforms():
                              std=[0.229, 0.224, 0.225]),
     ])
 
-
-def is_image_file(path: Path) -> bool:
-    return path.suffix.lower() in IMAGE_EXTS
-
-
-def sample_frames(frame_paths: Sequence[Path], num_frames: int) -> List[Path]:
-    frame_paths = sorted(frame_paths)
-    total = len(frame_paths)
-    if total == 0:
-        raise ValueError("Empty frame folder found.")
-    if total == num_frames:
-        return list(frame_paths)
-
-    indices = np.linspace(0, total - 1, num_frames)
-    indices = np.round(indices).astype(int)
-    indices = np.clip(indices, 0, total - 1)
-    return [frame_paths[i] for i in indices]
-
-
-def infer_label_from_path(path: Path, root: Path) -> Optional[int]:
-    """
-    Heuristic label inference for common deepfake dataset layouts.
-
-    Returns:
-        0 for real, 1 for fake, or None if the label cannot be inferred.
-    """
-    rel_parts = [p.lower() for p in path.relative_to(root).parts]
-
-    # Look from leaf -> root so the nearest label-like folder wins.
-    for part in reversed(rel_parts):
-        tokens = set(part.replace("-", "_").replace(" ", "_").split("_"))
-        if tokens & REAL_KEYWORDS:
-            return 0
-        if tokens & FAKE_KEYWORDS:
-            return 1
-
-    # Fallback to filename/path substring checks.
-    joined = "/".join(rel_parts)
-    if any(k in joined for k in REAL_KEYWORDS):
-        return 0
-    if any(k in joined for k in FAKE_KEYWORDS):
-        return 1
-
-    return None
-
-
-def discover_video_folders(root: Path) -> List[Path]:
-    """
-    Recursively find folders that directly contain frame images.
-    Each folder is treated as one video.
-    """
-    candidates = []
-    for dirpath, _, filenames in os.walk(root):
-        dirpath = Path(dirpath)
-        frames = [dirpath / f for f in filenames if is_image_file(Path(f))]
-        if frames:
-            candidates.append(dirpath)
-
-    # Remove duplicates and keep stable ordering.
-    unique = []
-    seen = set()
-    for p in sorted(candidates):
-        if p not in seen:
-            seen.add(p)
-            unique.append(p)
-    return unique
-
-
-def build_samples(root: str, num_frames: int) -> List[Tuple[List[Path], int]]:
-    root_path = Path(root)
-    if not root_path.exists():
-        raise FileNotFoundError(f"Dataset root not found: {root}")
-
-    video_dirs = discover_video_folders(root_path)
-    samples = []
-    unresolved = []
-
-    for vdir in video_dirs:
-        frame_paths = sorted([p for p in vdir.iterdir() if p.is_file() and is_image_file(p)])
-        if not frame_paths:
-            continue
-
-        label = infer_label_from_path(vdir, root_path)
-        if label is None:
-            unresolved.append(str(vdir))
-            continue
-
-        selected = sample_frames(frame_paths, num_frames)
-        samples.append((selected, label))
-
-    if unresolved and not samples:
-        raise RuntimeError(
-            "Could not infer labels from the dataset folder structure. "
-            "Please place videos under folders containing real/fake style names. "
-            f"Example unresolved folder: {unresolved[0]}"
-        )
-
-    if unresolved:
-        logging.warning(
-            f"Skipped {len(unresolved)} folders because labels could not be inferred. "
-            f"Example: {unresolved[0]}"
-        )
-
-    return samples
-
-
-# -------------------------- Dataset --------------------------
-class FrameFolderDataset(Dataset):
-    def __init__(self, samples, transform=None):
-        self.samples = samples
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        frame_paths, label = self.samples[idx]
-        frames = []
-        for fp in frame_paths:
-            img = Image.open(fp).convert("RGB")
-            img = self.transform(img) if self.transform else img
-            frames.append(img)
-
-        video = torch.stack(frames, dim=0)  # [T, 3, H, W]
-        label = torch.tensor(label, dtype=torch.long)
-        return video, label
-
-
-# -------------------------- Checkpoint --------------------------
-def load_checkpoint(model: torch.nn.Module, checkpoint_path: str, device: torch.device):
-    ckpt = torch.load(checkpoint_path, map_location=device)
-
-    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-        state_dict = ckpt["model_state_dict"]
-    else:
-        state_dict = ckpt
-
-    model.load_state_dict(state_dict, strict=True)
-    return ckpt
-
-
-# -------------------------- Evaluation --------------------------
-@torch.inference_mode()
-def evaluate_dataset(model, loader, edge_index, device, dataset_name: str):
-    model.eval()
-    all_probs = []
-    all_labels = []
-    total_loss = 0.0
-    criterion = torch.nn.CrossEntropyLoss()
-
-    for videos, labels in tqdm(loader, desc=f"Testing {dataset_name}"):
-        videos = videos.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
-
-        logits = model(videos, edge_index)
-        loss = criterion(logits, labels)
-        total_loss += loss.item()
-
-        probs = torch.softmax(logits, dim=1)[:, 1]
-        all_probs.extend(probs.detach().cpu().numpy().tolist())
-        all_labels.extend(labels.detach().cpu().numpy().tolist())
-
-    avg_loss = total_loss / max(1, len(loader))
-    preds = (np.array(all_probs) >= 0.5).astype(int)
-
-    acc = accuracy_score(all_labels, preds) if len(all_labels) else 0.0
-    try:
-        auc = roc_auc_score(all_labels, all_probs)
-    except ValueError:
-        auc = float("nan")
-
-    cm = confusion_matrix(all_labels, preds, labels=[0, 1]) if len(all_labels) else np.zeros((2, 2), dtype=int)
-
-    print(f"\n=== {dataset_name} ===")
-    print(f"Samples: {len(all_labels)}")
-    print(f"Avg loss: {avg_loss:.4f}")
-    print(f"Accuracy: {acc:.4f}")
-    print(f"AUC:      {auc:.4f}" if not np.isnan(auc) else "AUC:      N/A (only one class present)")
-    print("Confusion matrix [real, fake]:")
-    print(cm)
-    if len(set(all_labels)) > 1:
-        print("Classification report:")
-        print(classification_report(all_labels, preds, target_names=["real", "fake"], digits=4))
-
-    return {
-        "loss": avg_loss,
-        "acc": acc,
-        "auc": auc,
-        "num_samples": len(all_labels),
-        "confusion_matrix": cm,
-    }
-
-
-# -------------------------- Main --------------------------
+# ====================== Main ======================
 def main():
-    setup_logging()
-
-    parser = argparse.ArgumentParser(description="Test MyModel on Celeb-DF v1, Celeb-DF v2, and UADFV")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to trained checkpoint (.pth)")
-    parser.add_argument("--celeb1-root", type=str, default=None, help="Path to Celeb-DF v1 root folder")
-    parser.add_argument("--celeb2-root", type=str, default=None, help="Path to Celeb-DF v2 root folder")
-    parser.add_argument("--uadfv-root", type=str, default=None, help="Path to UADFV root folder")
-    parser.add_argument("--vit-name", type=str, default="dinov2_vits14")
-    parser.add_argument("--num-frames", type=int, default=8, help="Number of frames sampled per video")
-    parser.add_argument("--knn-k", type=int, default=8, help="K in create_frame_graph")
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--device", type=str, default=None, help="cuda, cpu, or leave empty for auto")
+    parser = argparse.ArgumentParser(description="Deepfake Detection Testing - Config Driven")
+    parser.add_argument("--config", type=str, required=True,
+                        help="Path to test.yaml configuration file")
     args = parser.parse_args()
 
-    provided = {
-        "Celeb-DF v1": args.celeb1_root,
-        "Celeb-DF v2": args.celeb2_root,
-        "UADFV": args.uadfv_root,
-    }
-    provided = {k: v for k, v in provided.items() if v}
+    # Load YAML config
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
 
-    if not provided:
-        raise ValueError("Provide at least one dataset root: --celeb1-root, --celeb2-root, or --uadfv-root")
+    # ==================== Determine Model Name for Organized Logging ====================
+    model_config = config.get('model', {})
+    model_path = model_config.get('model_path')
+    model_class_name = model_config.get('model_class')
+    vit_name = model_config.get('vit_name')
+    checkpoint_path = model_config.get('checkpoint_path')
 
-    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
+    if not model_path or not model_class_name or not vit_name:
+        raise ValueError(
+            "Configuration must include 'model_path', 'model_class', and 'vit_name' under the 'model' section.\n"
+            "Also provide 'checkpoint_path' for testing.\n"
+            "Example:\n"
+            "model:\n"
+            "  model_path: '/path/to/zahin_model_video.py'\n"
+            "  model_class: 'MyModel'\n"
+            "  vit_name: 'dinov2_vits14'\n"
+            "  checkpoint_path: '/path/to/best_model.pth'"
+        )
+
+    model_name = Path(model_path).stem  # e.g. "zahin_model_video"
+    logging.info(f"Using model folder: {model_name} (from {model_path})")
+
+    # ==================== Seed & Device ====================
+    seed = config.get('seed', 42)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    device = torch.device(config.get('training', {}).get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
     logging.info(f"Using device: {device}")
 
-    # Model input check from train.py:
-    # - videos are [B, T, 3, 224, 224]
-    # - T is fixed by --num-frames
-    # - each frame is resized to 224x224 and normalized
-    model = MyModel(vit_name=args.vit_name).to(device)
-    load_checkpoint(model, args.checkpoint, device)
-    model.eval()
+    # ==================== Timestamped Run Folder (inside model-specific folder) ====================
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_name = f"test_run_{timestamp}"  # prefixed so you can distinguish from training runs
+    log_base = Path(config['paths']['log_dir']) / model_name
+    log_base.mkdir(parents=True, exist_ok=True)
+    run_dir = setup_run_logging(str(log_base), run_name)
+    save_hyperparams(config, run_dir)
 
-    edge_index = create_frame_graph(T=args.num_frames, N=256, K=args.knn_k).to(device)
-
-    # Print a small shape sanity check.
-    logging.info(f"Expected model input: [B, {args.num_frames}, 3, 224, 224]")
-    logging.info(f"Graph edge_index shape: {tuple(edge_index.shape)}")
-
+    # ==================== Transforms & Graph (same as train.py) ====================
     transform = get_transforms()
+    training_cfg = config['training']
+    num_frames = training_cfg['num_frames']
+    knn_k = training_cfg.get('knn_k', 4)  # must match what you used during training
+    edge_index = create_frame_graph(
+        T=num_frames,
+        N=256,                    # hardcoded exactly as in train.py
+        K=knn_k
+    ).to(device)
+
+    # ==================== Dynamic Model + Load Checkpoint ====================
+    ModelClass = load_model_class(model_path, model_class_name)
+    model = ModelClass(vit_name=vit_name).to(device)
+
+    if checkpoint_path:
+        ckpt = torch.load(checkpoint_path, map_location=device)
+        state_dict = ckpt.get('model_state_dict', ckpt)
+        model.load_state_dict(state_dict)
+        logging.info(f"✅ Loaded checkpoint from {checkpoint_path}")
+    else:
+        logging.warning("⚠️  No checkpoint_path provided. Using randomly initialized model!")
+
+    # ==================== Testing Loop over multiple datasets ====================
+    json_root = config['data']['json_root']
+    dataset_names = config['data']['dataset_names']  # list of dataset names
+    batch_size = training_cfg['batch_size']
+
+    criterion = nn.CrossEntropyLoss()
     results = {}
 
-    for dataset_name, root in provided.items():
-        logging.info(f"Discovering samples for {dataset_name}: {root}")
-        samples = build_samples(root, args.num_frames)
-        if not samples:
-            logging.warning(f"No valid samples found for {dataset_name}.")
+    logging.info("=== Starting Testing ===")
+    for dataset_name in dataset_names:
+        logging.info(f"\n🔬 Testing on dataset: {dataset_name}")
+
+        # get_dataset returns (train_dataset, test_dataset)
+        # For non-FF++ cross-dataset JSONs: train_dataset=None, test_dataset=full dataset
+        # For FF++: test_dataset=the test split
+        _, test_dataset = get_dataset(json_root, dataset_name, transform)
+
+        if test_dataset is None or len(test_dataset) == 0:
+            logging.warning(f"⚠️  No test data found for {dataset_name}. Skipping.")
             continue
 
-        labels = [label for _, label in samples]
-        real_count = sum(1 for x in labels if x == 0)
-        fake_count = sum(1 for x in labels if x == 1)
-        logging.info(
-            f"{dataset_name} -> videos: {len(samples)} | real: {real_count} | fake: {fake_count}"
-        )
-
-        dataset = FrameFolderDataset(samples, transform=transform)
-        loader = DataLoader(
-            dataset,
-            batch_size=args.batch_size,
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=batch_size,
             shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=torch.cuda.is_available(),
+            num_workers=4,
+            pin_memory=torch.cuda.is_available()
         )
 
-        # Verify one sample shape against the model expectation.
-        sample_video, sample_label = dataset[0]
+        # ----------------- Evaluation -----------------
+        model.eval()
+        test_loss = 0.0
+        test_preds, test_labels = [], []
+
+        with torch.no_grad():
+            for videos, labels in tqdm(test_loader, desc=f"Testing {dataset_name}"):
+                videos = videos.to(device)
+                labels = labels.to(device)
+
+                logits = model(videos, edge_index)
+                loss = criterion(logits, labels)
+
+                test_loss += loss.item()
+                probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
+                test_preds.extend(probs)
+                test_labels.extend(labels.cpu().numpy())
+
+        test_loss /= len(test_loader)
+        test_auc = roc_auc_score(test_labels, test_preds)
+        test_acc = accuracy_score(test_labels, (np.array(test_preds) > 0.5).astype(int))
+
+        # Log per-dataset results
         logging.info(
-            f"Sample shape for {dataset_name}: video={tuple(sample_video.shape)} label={int(sample_label)}"
+            f"✅ {dataset_name} | "
+            f"Test Loss: {test_loss:.4f} | "
+            f"Test Acc: {test_acc:.4f} | "
+            f"Test AUC: {test_auc:.4f} | "
+            f"Samples: {len(test_dataset)}"
         )
 
-        results[dataset_name] = evaluate_dataset(model, loader, edge_index, device, dataset_name)
+        results[dataset_name] = {
+            "test_loss": float(test_loss),
+            "test_acc": float(test_acc),
+            "test_auc": float(test_auc),
+            "num_samples": len(test_dataset)
+        }
 
-    print("\n=== Summary ===")
-    for name, res in results.items():
-        print(f"{name}: acc={res['acc']:.4f}, auc={res['auc']:.4f}, samples={res['num_samples']}")
+    # ==================== Save Results ====================
+    results_path = run_dir / "test_results.json"
+    with open(results_path, 'w') as f:
+        json.dump(results, f, indent=4)
+    logging.info(f"✅ All test results saved to {results_path}")
+
+    logging.info("=== Testing Finished ===")
+    if results:
+        logging.info(f"Overall best AUC across datasets: {max(r['test_auc'] for r in results.values()):.4f}")
 
 
 if __name__ == "__main__":

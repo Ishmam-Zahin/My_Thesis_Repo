@@ -1,0 +1,24 @@
+# ====================== test.yaml ======================
+model:
+  model_path: "/home/zahin/Desktop/My_Thesis_Repo/models/model2.py"   # ← your model .py file
+  model_class: "MyModel"                                                         # ← your class name
+  vit_name: "dinov2_vits14"
+  checkpoint_path: "/home/zahin/Desktop/My_Thesis_Repo/checkpoints/best_model.pth"  # ← trained weights
+
+data:
+  json_root: "/home/zahin/Desktop/My_Thesis_Repo/rearrange/dataset_json"
+  dataset_names:          # ← you can test as many datasets as you want
+    - "Celeb-DF"
+    - "DFDC"
+    - "DeepfakeDetection"   # add any other JSON filenames (without .json)
+
+paths:
+  log_dir: "/home/zahin/Desktop/My_Thesis_Repo/test_logs"   # same base as your train.yaml
+
+training:
+  batch_size: 4
+  num_frames: 8          # MUST match the value you used during training
+  knn_k: 8                # MUST match the value you used during training
+  device: "cuda"
+
+seed: 42                  # optional, for reproducibility
