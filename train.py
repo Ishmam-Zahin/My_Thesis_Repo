@@ -212,6 +212,9 @@ def main():
     early_stop_delta = config['early_stopping']['delta']
     logging.info("=== Starting Training ===")
 
+    lamda_min = 0.1
+    lamda_ortho = 0.1
+
     for epoch in range(start_epoch, epochs):
         # ----------------- Train -----------------
         model.train()
@@ -223,7 +226,7 @@ def main():
             optimizer.zero_grad()
             logits, mincut_loss, ortho_loss = model(videos, edge_index)
             loss = criterion(logits, labels)
-            loss += mincut_loss.mean() + ortho_loss.mean()
+            loss += (lamda_min * mincut_loss) + (lamda_ortho * ortho_loss)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -246,7 +249,7 @@ def main():
                     labels = labels.to(device)
                     logits, mincut_loss, ortho_loss = model(videos, edge_index)
                     loss = criterion(logits, labels)
-                    loss += mincut_loss.mean() + ortho_loss.mean()
+                    loss += (lamda_min * mincut_loss) + (lamda_ortho * ortho_loss)
                     val_loss += loss.item()
                     probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
                     val_preds.extend(probs)

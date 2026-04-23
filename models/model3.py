@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from torch_geometric.data import Data, Batch
-from torch_geometric.nn import GCNConv, GATv2Conv
+from torch_geometric.nn import GATv2Conv
 import torch.nn.functional as F
 from torch_geometric.utils import to_dense_adj
 from torch_geometric.nn.dense import dense_mincut_pool
@@ -199,3 +199,6 @@ class MyModel(nn.Module):
         # (Optional: you can return mincut_loss + ortho_loss for training)
         # return logits, mincut_loss, ortho_loss
         return (logits, mincut_loss, ortho_loss)
+
+
+

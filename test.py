@@ -149,12 +149,17 @@ def main():
         model.eval()
         test_loss = 0.0
         test_preds, test_labels = [], []
+
+        lamda_min = 0.1
+        lamda_ortho = 0.1
+
         with torch.no_grad():
             for videos, labels in tqdm(test_loader, desc=f"Testing {dataset_name}"):
                 videos = videos.to(device)
                 labels = labels.to(device)
-                logits = model(videos, edge_index)
+                logits, mincut_loss, ortho_loss = model(videos, edge_index)
                 loss = criterion(logits, labels)
+                loss += (lamda_min * mincut_loss) + (lamda_ortho * ortho_loss)
                 test_loss += loss.item()
                 probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
                 test_preds.extend(probs)
