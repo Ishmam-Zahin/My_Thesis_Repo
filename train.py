@@ -175,6 +175,12 @@ def main():
             lr=config['training']['lr'],
             weight_decay=config['training'].get('weight_decay', 1e-5)
         )
+    elif optimizer_name == 'AdamW':
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=config['training']['lr'],
+            weight_decay=config['training'].get('weight_decay', 1e-5)
+        )
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
