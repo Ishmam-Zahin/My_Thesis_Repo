@@ -19,8 +19,8 @@ from tqdm import tqdm
 from torchvision import transforms
 
 # ====================== Your existing modules ======================
-from helpers.dataset_loader import get_dataset  # <-- uses your JSON + MyDataset
-from create_graph import create_frame_graph
+from helpers.dataset_loader import get_dataset
+from helpers.create_spatial_edges import get_spatial_edges
 
 # ====================== Dynamic Model Loader ======================
 def load_model_class(model_path: str, class_name: str):
@@ -141,23 +141,30 @@ def main():
             num_workers=4,
             pin_memory=torch.cuda.is_available()
         )
-
-    # ==================== Model & Graph (DYNAMIC LOADING) ====================
-    ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
-    model = ModelClass(vit_name=model_config['vit_name']).to(device)
-
-    # Fixed graph (same for every batch)
-    edge_index = create_frame_graph(
+    
+    #getting spatial edges for one video
+    video_spatial_src_edges, video_spatial_dst_edges = get_spatial_edges(
         T=config['training']['num_frames'],
         N=256,
         K=config['training']['knn_k']
-    ).to(device)
+    )
+    video_spatial_src_edges = video_spatial_src_edges.to(device)
+    video_spatial_dst_edges = video_spatial_dst_edges.to(device)
+
+    # ==================== Model & Graph (DYNAMIC LOADING) ====================
+    ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
+    model = ModelClass(
+        vit_name=model_config['vit_name'],
+        video_spatial_src_edges = video_spatial_src_edges,
+        video_spatial_dst_edges = video_spatial_dst_edges
+        ).to(device)
+
 
     # Model summary
     if torch.cuda.is_available():
         summary(
             model,
-            input_data=(torch.randn(1, config['training']['num_frames'], 3, 224, 224).to(device), edge_index),
+            input_data=(torch.randn(1, config['training']['num_frames'], 3, 224, 224).to(device)),
             device="cuda"
         )
 
@@ -235,7 +242,7 @@ def main():
             videos = videos.to(device)
             labels = labels.to(device)
             optimizer.zero_grad()
-            logits, mincut_loss, ortho_loss = model(videos, edge_index)
+            logits, mincut_loss, ortho_loss = model(videos)
             loss = criterion(logits, labels)
             loss += (lamda_min * mincut_loss) + (lamda_ortho * ortho_loss)
             loss.backward()
@@ -258,7 +265,7 @@ def main():
                 for videos, labels in tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} [Val]"):
                     videos = videos.to(device)
                     labels = labels.to(device)
-                    logits, mincut_loss, ortho_loss = model(videos, edge_index)
+                    logits, mincut_loss, ortho_loss = model(videos)
                     loss = criterion(logits, labels)
                     loss += (lamda_min * mincut_loss) + (lamda_ortho * ortho_loss)
                     val_loss += loss.item()
