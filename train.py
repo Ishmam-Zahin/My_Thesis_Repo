@@ -183,8 +183,13 @@ def main():
         )
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
+    
+    real_weight = 5.0
+    fake_weight = 1.0
 
-    criterion = nn.CrossEntropyLoss()
+    class_weights = torch.tensor([real_weight, fake_weight]).to(device)
+
+    criterion = nn.CrossEntropyLoss(weight = class_weights)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=3
     )
@@ -218,8 +223,8 @@ def main():
     early_stop_delta = config['early_stopping']['delta']
     logging.info("=== Starting Training ===")
 
-    lamda_min = 0.1
-    lamda_ortho = 0.1
+    lamda_min = config['pool'].get('lamda_min', 0.1)
+    lamda_ortho = config['pool'].get('lamda_ortho', 0.1)
 
     for epoch in range(start_epoch, epochs):
         # ----------------- Train -----------------
