@@ -1,6 +1,8 @@
 data:
   json_root: "/home/zahin/Desktop/My_Thesis_Repo/rearrange/dataset_json"
   dataset_name: "FaceForensics++"
+  real_weight: 5.0
+  fake_weight: 1.0
 
 model:
   model_path: "/home/zahin/Desktop/My_Thesis_Repo/models/model2.py"
@@ -16,6 +18,10 @@ training:
   weight_decay: 0.00001
   num_frames: 8
   knn_k: 8
+
+pool:
+  lamda_min: 0.1
+  lamda_ortho: 0.1
 
 paths:
   checkpoint_dir: "/home/zahin/Desktop/My_Thesis_Repo/checkpoints"

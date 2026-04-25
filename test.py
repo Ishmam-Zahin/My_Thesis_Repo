@@ -15,7 +15,7 @@ from tqdm import tqdm
 from torchvision import transforms
 # ====================== Your existing modules ======================
 from helpers.dataset_loader import get_dataset
-from create_graph import create_frame_graph
+from helpers.create_spatial_edges import get_spatial_edges
 # ====================== Dynamic Model Loader ======================
 def load_model_class(model_path: str, class_name: str):
     """Dynamically load a model class from a .py file path (same as train.py)."""
@@ -107,14 +107,21 @@ def main():
     training_cfg = config['training']
     num_frames = training_cfg['num_frames']
     knn_k = training_cfg.get('knn_k', 4) # must match what you used during training
-    edge_index = create_frame_graph(
+    #getting spatial edges for one video
+    video_spatial_src_edges, video_spatial_dst_edges = get_spatial_edges(
         T=num_frames,
-        N=256, # hardcoded exactly as in train.py
+        N=256,
         K=knn_k
-    ).to(device)
+    )
+    video_spatial_src_edges = video_spatial_src_edges.to(device)
+    video_spatial_dst_edges = video_spatial_dst_edges.to(device)
     # ==================== Dynamic Model + Load Checkpoint ====================
     ModelClass = load_model_class(model_path, model_class_name)
-    model = ModelClass(vit_name=vit_name).to(device)
+    model = ModelClass(
+        vit_name=vit_name,
+        video_spatial_src_edges = video_spatial_src_edges,
+        video_spatial_dst_edges = video_spatial_dst_edges
+    ).to(device)
     if checkpoint_path:
         ckpt = torch.load(checkpoint_path, map_location=device)
         state_dict = ckpt.get('model_state_dict', ckpt)
@@ -126,7 +133,12 @@ def main():
     json_root = config['data']['json_root']
     dataset_names = config['data']['dataset_names'] # list of dataset names
     batch_size = training_cfg['batch_size']
-    criterion = nn.CrossEntropyLoss()
+    real_weight = 5.0
+    fake_weight = 1.0
+
+    class_weights = torch.tensor([real_weight, fake_weight]).to(device)
+
+    criterion = nn.CrossEntropyLoss(weight = class_weights)
     results = {}
     logging.info("=== Starting Testing ===")
     for dataset_name in dataset_names:
@@ -157,7 +169,7 @@ def main():
             for videos, labels in tqdm(test_loader, desc=f"Testing {dataset_name}"):
                 videos = videos.to(device)
                 labels = labels.to(device)
-                logits, mincut_loss, ortho_loss = model(videos, edge_index)
+                logits, mincut_loss, ortho_loss = model(videos)
                 loss = criterion(logits, labels)
                 loss += (lamda_min * mincut_loss) + (lamda_ortho * ortho_loss)
                 test_loss += loss.item()
@@ -166,7 +178,7 @@ def main():
                 test_labels.extend(labels.cpu().numpy())
         test_loss /= len(test_loader)
         test_auc = roc_auc_score(test_labels, test_preds)
-        binary_preds = (np.array(test_preds) > 0.5).astype(int)
+        binary_preds = (np.array(test_preds) > 0.7).astype(int)
         test_acc = accuracy_score(test_labels, binary_preds)
         test_precision = precision_score(test_labels, binary_preds, zero_division=0)
         test_recall = recall_score(test_labels, binary_preds, zero_division=0)

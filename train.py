@@ -191,8 +191,8 @@ def main():
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
     
-    real_weight = 5.0
-    fake_weight = 1.0
+    real_weight = config['data'].get('real_weight', 5.0)
+    fake_weight = config['data'].get('fake_weight', 1.0)
 
     class_weights = torch.tensor([real_weight, fake_weight]).to(device)
 
