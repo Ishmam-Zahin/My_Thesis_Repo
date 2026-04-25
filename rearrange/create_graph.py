@@ -99,7 +99,7 @@ def add_temporal_edges(
         patch_next = frame_patch_norm[t + 1]
         sim = torch.mm(patch_curr, patch_next.t())
         _, top_idx = torch.topk(sim, k = K, dim = -1)
-        edge_temporal_src_local = torch.arange(N, device = frame_patches.device).unsqueeze(1).expand(-1, K).reshape(-1)
+        edge_temporal_src_local = torch.arange(N).unsqueeze(1).expand(-1, K).reshape(-1)
         edge_temporal_dst_local = top_idx.reshape(-1)
         edge_temporal_src_local += (t * N)
         edge_temporal_dst_local += ((t + 1) * N)
@@ -122,10 +122,8 @@ def main():
         frames = load_images(video, transform)
         patches = vit(frames)
         edge_temporal_src_global, edge_temporal_dst_global = add_temporal_edges(patches, [edge_src_global], [edge_dst_global])
-        print(edge_temporal_src_global.shape)
-        print(edge_temporal_dst_global.shape)
-        print(edge_temporal_src_global.dtype)
-        print(edge_temporal_dst_global.dtype)
+        print(edge_temporal_src_global[:10])
+        print(edge_temporal_dst_global[:10])
         break
     
 
