@@ -41,10 +41,10 @@ def get_dataset(
     
     if train_videos_paths:
         train_dataset = MyDataset(train_videos_paths, train_videos_labels, transform = transform)
-        test_dataset = MyDataset(test_videos_paths, test_videos_labels, transform = transform)
+        test_dataset = MyDataset(test_videos_paths, test_videos_labels, transform = transform, test = True)
     else:
         train_dataset = None
-        test_dataset = MyDataset(test_videos_paths, test_videos_labels, transform = transform)
+        test_dataset = MyDataset(test_videos_paths, test_videos_labels, transform = transform, test = True)
     
     return (train_dataset, test_dataset)
 

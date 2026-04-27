@@ -118,9 +118,11 @@ def main():
     # ==================== Dynamic Model + Load Checkpoint ====================
     ModelClass = load_model_class(model_path, model_class_name)
     model = ModelClass(
-        vit_name=vit_name,
+        vit_name=model_config['vit_name'],
         video_spatial_src_edges = video_spatial_src_edges,
-        video_spatial_dst_edges = video_spatial_dst_edges
+        video_spatial_dst_edges = video_spatial_dst_edges,
+        vit_weight_path = config['model']['vit_weight'],
+        dinoV3_repo_dir = '/home/cse/Desktop/zahin_thesis_work/dinov3'
     ).to(device)
     if checkpoint_path:
         ckpt = torch.load(checkpoint_path, map_location=device)
@@ -162,8 +164,8 @@ def main():
         test_loss = 0.0
         test_preds, test_labels = [], []
 
-        lamda_min = 0.1
-        lamda_ortho = 0.1
+        lamda_min = 0.01
+        lamda_ortho = 0.01
 
         with torch.no_grad():
             for videos, labels in tqdm(test_loader, desc=f"Testing {dataset_name}"):

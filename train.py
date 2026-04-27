@@ -63,7 +63,7 @@ def save_hyperparams(config: dict, run_dir: Path):
 
 def get_transforms():
     return transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((256, 256)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225]),
@@ -156,15 +156,17 @@ def main():
     model = ModelClass(
         vit_name=model_config['vit_name'],
         video_spatial_src_edges = video_spatial_src_edges,
-        video_spatial_dst_edges = video_spatial_dst_edges
-        ).to(device)
+        video_spatial_dst_edges = video_spatial_dst_edges,
+        vit_weight_path = config['model']['vit_weight'],
+        dinoV3_repo_dir = '/home/cse/Desktop/zahin_thesis_work/dinov3'
+    ).to(device)
 
 
     # Model summary
     if torch.cuda.is_available():
         summary(
             model,
-            input_data=(torch.randn(1, config['training']['num_frames'], 3, 224, 224).to(device)),
+            input_data=(torch.randn(1, config['training']['num_frames'], 3, 256, 256).to(device)),
             device="cuda"
         )
 

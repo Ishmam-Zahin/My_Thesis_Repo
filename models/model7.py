@@ -13,9 +13,9 @@ class VideoFeatureExtractor(nn.Module):
     Input: [B, T, 3, H, W]
     Output: [B, T*N, D] where N=256, D=384 for dinov2_vits14
     """
-    def __init__(self, vit_name: str = 'dinov2_vits14'):
+    def __init__(self, vit_name, vit_weight_path, dinoV3_repo_dir):
         super().__init__()
-        self.vit = torch.hub.load('facebookresearch/dinov2', vit_name)
+        self.vit = torch.hub.load(dinoV3_repo_dir, vit_name, source='local', weights=vit_weight_path)
         for param in self.vit.parameters():
             param.requires_grad = False
         self.vit.eval()
@@ -85,15 +85,18 @@ class MyModel(nn.Module):
         feature_dim: int = 384,
         num_gcn_layers: int = 5,
         num_clusters: int = 512,          # pooled nodes after min-cut
-        num_transformer_blocks: int = 1,  # as tested in paper ablation (TB=3)
+        num_transformer_blocks: int = 3,  # as tested in paper ablation (TB=3)
         num_heads: int = 8,               # paper: 8 self-attention heads
         mlp_dim: int = 512,               # paper: MLP size of 512
         dropout: float = 0.2,
         num_of_frames = 8,
         num_of_nodes_per_frame = 256,
-        num_of_temporal_edge_per_node = 3,
+        num_of_temporal_edge_per_node = 4,
         video_spatial_src_edges = None,
-        video_spatial_dst_edges = None
+        video_spatial_dst_edges = None,
+        vit_weight_path = None,
+        dinoV3_repo_dir = None
+
     ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -107,7 +110,7 @@ class MyModel(nn.Module):
         self.video_spatial_dst_edges = video_spatial_dst_edges
 
         # Feature extractor (frozen DINOv2)
-        self.vit = VideoFeatureExtractor(vit_name=vit_name)
+        self.vit = VideoFeatureExtractor(vit_name=vit_name, vit_weight_path=vit_weight_path, dinoV3_repo_dir=dinoV3_repo_dir)
 
         assert feature_dim % num_heads == 0
         head_dim = feature_dim // num_heads
@@ -234,5 +237,3 @@ class MyModel(nn.Module):
         # (Optional: you can return mincut_loss + ortho_loss for training)
         # return logits, mincut_loss, ortho_loss
         return (logits, mincut_loss, ortho_loss)
-
-
