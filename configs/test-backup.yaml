@@ -1,22 +1,24 @@
 # ====================== test.yaml ======================
 model:
-  model_path: "/home/zahin/Desktop/My_Thesis_Repo/models/model2.py"   # ← your model .py file
-  model_class: "MyModel"                                                         # ← your class name
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model8.py"
+  model_class: "MyModel"
   vit_name: "dinov2_vits14"
-  checkpoint_path: "/home/zahin/Desktop/My_Thesis_Repo/checkpoints/best_model.pth"  # ← trained weights
+  checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/model8/best_model.pth"
+  vit_weight: null  # ← trained weights
 
 data:
-  json_root: "/home/zahin/Desktop/My_Thesis_Repo/rearrange/dataset_json"
+  json_root: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/rearrange/dataset_json"
   dataset_names:          # ← you can test as many datasets as you want
-    - "Celeb-DF"
+    - "Celeb-DF-v1"
+    - "Celeb-DF-v2"
+    - "UADFV"   # add any other JSON filenames (without .json)
     - "DFDC"
-    - "DeepfakeDetection"   # add any other JSON filenames (without .json)
 
 paths:
-  log_dir: "/home/zahin/Desktop/My_Thesis_Repo/test_logs"   # same base as your train.yaml
+  log_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/test_logs"   # same base as your train.yaml
 
 training:
-  batch_size: 4
+  batch_size: 6
   num_frames: 8          # MUST match the value you used during training
   knn_k: 8                # MUST match the value you used during training
   device: "cuda"

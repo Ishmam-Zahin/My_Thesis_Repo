@@ -14,6 +14,10 @@ def determine_labels(path):
     fake_words = ['fake', 'manipulated', 'synthesis']
     path_str = str(path).lower()
 
+    if 'dfdc' in path_str:
+        label = int(path_str.split('+')[1])
+        return label
+
     for word in real_words:
         if word in path_str:
             return 0
@@ -27,6 +31,12 @@ def get_labels(videos_paths):
     for video in videos_paths:
         label = determine_labels(video[0])
         videos_labels.append(label)
+        if 'dfdc' in str(video[0]).lower():
+            for i in range(len(video)):
+                path_str = str(video[i])
+                path = path_str.split('+')[0]
+                path = Path(path)
+                video[i] = path
     return videos_labels
 
 def get_dataset(

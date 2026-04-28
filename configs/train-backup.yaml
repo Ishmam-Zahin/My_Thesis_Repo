@@ -1,36 +1,38 @@
 data:
-  json_root: "/home/zahin/Desktop/My_Thesis_Repo/rearrange/dataset_json"
+  json_root: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/rearrange/dataset_json"
   dataset_name: "FaceForensics++"
   real_weight: 5.0
   fake_weight: 1.0
 
 model:
-  model_path: "/home/zahin/Desktop/My_Thesis_Repo/models/model2.py"
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model8.py"
   model_class: "MyModel"
   vit_name: "dinov2_vits14"
   pretrained_path: null
+  vit_weight: null
+
 
 training:
-  epochs: 1
-  batch_size: 4
+  epochs: 50
+  batch_size: 6
   lr: 0.0001
-  optimizer: "Adam"
+  optimizer: "AdamW"
   weight_decay: 0.00001
   num_frames: 8
   knn_k: 8
 
 pool:
-  lamda_min: 0.1
-  lamda_ortho: 0.1
+  lamda_min: 0.0
+  lamda_ortho: 0.0
 
 paths:
-  checkpoint_dir: "/home/zahin/Desktop/My_Thesis_Repo/checkpoints"
-  log_dir: "/home/zahin/Desktop/My_Thesis_Repo/logs"
+  checkpoint_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints"
+  log_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/logs"
 
 early_stopping:
-  patience: 3
-  delta: 0.001
+  patience: 10
+  delta: 0.0005
 
 seed: 42
-device: "cpu"
+device: "cuda"
 resume: false # set true to resume from last_checkpoint.pth

@@ -157,8 +157,6 @@ def main():
         vit_name=model_config['vit_name'],
         video_spatial_src_edges = video_spatial_src_edges,
         video_spatial_dst_edges = video_spatial_dst_edges,
-        vit_weight_path = config['model']['vit_weight'],
-        dinoV3_repo_dir = '/home/cse/Desktop/zahin_thesis_work/dinov3'
     ).to(device)
 
 
@@ -166,7 +164,7 @@ def main():
     if torch.cuda.is_available():
         summary(
             model,
-            input_data=(torch.randn(1, config['training']['num_frames'], 3, 256, 256).to(device)),
+            input_data=(torch.randn(1, config['training']['num_frames'], 3, 224, 224).to(device)),
             device="cuda"
         )
 

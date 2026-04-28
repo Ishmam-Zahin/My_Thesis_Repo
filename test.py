@@ -121,8 +121,6 @@ def main():
         vit_name=model_config['vit_name'],
         video_spatial_src_edges = video_spatial_src_edges,
         video_spatial_dst_edges = video_spatial_dst_edges,
-        vit_weight_path = config['model']['vit_weight'],
-        dinoV3_repo_dir = '/home/cse/Desktop/zahin_thesis_work/dinov3'
     ).to(device)
     if checkpoint_path:
         ckpt = torch.load(checkpoint_path, map_location=device)
@@ -164,8 +162,8 @@ def main():
         test_loss = 0.0
         test_preds, test_labels = [], []
 
-        lamda_min = 0.01
-        lamda_ortho = 0.01
+        lamda_min = 0.0
+        lamda_ortho = 0.0
 
         with torch.no_grad():
             for videos, labels in tqdm(test_loader, desc=f"Testing {dataset_name}"):
@@ -180,7 +178,7 @@ def main():
                 test_labels.extend(labels.cpu().numpy())
         test_loss /= len(test_loader)
         test_auc = roc_auc_score(test_labels, test_preds)
-        binary_preds = (np.array(test_preds) > 0.7).astype(int)
+        binary_preds = (np.array(test_preds) > 0.5).astype(int)
         test_acc = accuracy_score(test_labels, binary_preds)
         test_precision = precision_score(test_labels, binary_preds, zero_division=0)
         test_recall = recall_score(test_labels, binary_preds, zero_division=0)

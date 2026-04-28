@@ -38,7 +38,7 @@ class MyDataset(Dataset):
             img = Image.open(fp).convert("RGB")
 
             # 🔹 Step 1: Resize FIRST
-            img = TF.resize(img, (256, 256))
+            img = TF.resize(img, (224, 224))
 
             # 🔹 Step 2: Augment (same params)
             if aug_apply:
