@@ -13,13 +13,26 @@ class VideoFeatureExtractor(nn.Module):
     Input: [B, T, 3, H, W]
     Output: [B, T*N, D] where N=256, D=384 for dinov2_vits14
     """
-    def __init__(self, vit_name = 'dinov2_vitb14', feature_dim = 384, total_nodes = 256):
+    def __init__(self, vit_name='dinov2_vitb14', feature_dim=384, total_nodes=256):
         super().__init__()
         self.vit = torch.hub.load('facebookresearch/dinov2', vit_name)
-        for param in self.vit.parameters():
-            param.requires_grad = False
-        self.vit.eval()
-        self.D =  feature_dim
+
+        # Freeze everything first
+        for p in self.vit.parameters():
+            p.requires_grad = False
+
+        # Unfreeze last 2 transformer blocks
+        if hasattr(self.vit, "blocks"):
+            for block in self.vit.blocks[-2:]:
+                for p in block.parameters():
+                    p.requires_grad = True
+
+        # Usually also fine to unfreeze the final norm
+        if hasattr(self.vit, "norm"):
+            for p in self.vit.norm.parameters():
+                p.requires_grad = True
+
+        self.D = feature_dim
         self.total_nodes = total_nodes
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

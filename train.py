@@ -63,7 +63,7 @@ def save_hyperparams(config: dict, run_dir: Path):
 
 def get_transforms():
     return transforms.Compose([
-        transforms.Resize((256, 256)),
+        transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225]),
@@ -176,6 +176,19 @@ def main():
 
     # ==================== Optimizer & Loss ====================
     optimizer_name = config['training']['optimizer']
+
+    vit_params = []
+    other_params = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        if "vit" in name:
+            vit_params.append(param)
+        else:
+            other_params.append(param)
+
     if optimizer_name == "Adam":
         optimizer = optim.Adam(
             model.parameters(),
@@ -183,11 +196,11 @@ def main():
             weight_decay=config['training'].get('weight_decay', 1e-5)
         )
     elif optimizer_name == 'AdamW':
-        optimizer = optim.AdamW(
-            model.parameters(),
-            lr=config['training']['lr'],
-            weight_decay=config['training'].get('weight_decay', 1e-5)
-        )
+        optimizer = optim.AdamW([
+            {"params": vit_params, "lr": 1e-5},   # 🔹 small LR for ViT
+            {"params": other_params, "lr": config['training']['lr']}  # 🔹 normal LR
+        ],
+        weight_decay=config['training'].get('weight_decay', 1e-5))
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
     
@@ -198,7 +211,7 @@ def main():
 
     criterion = nn.CrossEntropyLoss(weight = class_weights)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=3
+        optimizer, mode="max", factor=0.5, patience=2
     )
 
     # ==================== Checkpointing & Resume (MODIFIED) ====================

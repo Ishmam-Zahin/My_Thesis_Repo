@@ -133,7 +133,7 @@ def main():
     json_root = config['data']['json_root']
     dataset_names = config['data']['dataset_names'] # list of dataset names
     batch_size = training_cfg['batch_size']
-    real_weight = 5.0
+    real_weight = 1.0
     fake_weight = 1.0
 
     class_weights = torch.tensor([real_weight, fake_weight]).to(device)
@@ -162,8 +162,8 @@ def main():
         test_loss = 0.0
         test_preds, test_labels = [], []
 
-        lamda_min = 0.0
-        lamda_ortho = 0.0
+        lamda_min = 0.1
+        lamda_ortho = 0.01
 
         with torch.no_grad():
             for videos, labels in tqdm(test_loader, desc=f"Testing {dataset_name}"):
