@@ -157,6 +157,7 @@ def main():
         vit_name=model_config['vit_name'],
         video_spatial_src_edges = video_spatial_src_edges,
         video_spatial_dst_edges = video_spatial_dst_edges,
+        vit_weight_path = config['model']['vit_weight']
     ).to(device)
 
 
@@ -196,11 +197,11 @@ def main():
             weight_decay=config['training'].get('weight_decay', 1e-5)
         )
     elif optimizer_name == 'AdamW':
-        optimizer = optim.AdamW([
-            {"params": vit_params, "lr": 1e-5},   # 🔹 small LR for ViT
-            {"params": other_params, "lr": config['training']['lr']}  # 🔹 normal LR
-        ],
-        weight_decay=config['training'].get('weight_decay', 1e-5))
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=config['training']['lr'],
+            weight_decay=config['training'].get('weight_decay', 1e-5)
+        )
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
     

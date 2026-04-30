@@ -121,6 +121,7 @@ def main():
         vit_name=model_config['vit_name'],
         video_spatial_src_edges = video_spatial_src_edges,
         video_spatial_dst_edges = video_spatial_dst_edges,
+        vit_weight_path = config['model']['vit_weight'],
     ).to(device)
     if checkpoint_path:
         ckpt = torch.load(checkpoint_path, map_location=device)
@@ -133,7 +134,7 @@ def main():
     json_root = config['data']['json_root']
     dataset_names = config['data']['dataset_names'] # list of dataset names
     batch_size = training_cfg['batch_size']
-    real_weight = 1.0
+    real_weight = 5.0
     fake_weight = 1.0
 
     class_weights = torch.tensor([real_weight, fake_weight]).to(device)
