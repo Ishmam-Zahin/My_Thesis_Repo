@@ -343,36 +343,29 @@ def main():
 
     # Build image lists
     train_imgs, train_labels = [], []
-    val_imgs, val_labels = [], []
     test_imgs, test_labels = [], []
 
-    # FF++: keep provided test set untouched, split training videos into train/val
+    # FF++
     ff_train_videos, ff_test_videos = load_json(ff_json_path)
-    ff_train_pool, ff_val_videos = split_videos(ff_train_videos, test_size=0.15)
-    process_videos(ff_train_pool, train_imgs, train_labels)
-    process_videos(ff_val_videos, val_imgs, val_labels)
+    process_videos(ff_train_videos, train_imgs, train_labels)
     process_videos(ff_test_videos, test_imgs, test_labels)
     print("Finished FF++")
 
-    # # Celeb-DF-v2: split into train/val/test at video level
-    # _, all_celeb = load_json(celeb_json_path)
-    # celeb_train_pool, celeb_test_videos = split_videos(all_celeb, test_size=0.20)
-    # celeb_train_videos, celeb_val_videos = split_videos(celeb_train_pool, test_size=0.15)
-    # process_videos(celeb_train_videos, train_imgs, train_labels)
-    # process_videos(celeb_val_videos, val_imgs, val_labels)
-    # process_videos(celeb_test_videos, test_imgs, test_labels)
-    # print("Finished Celeb-DF-v2")
+    # Celeb-DF-v2
+    _, all_celeb = load_json(celeb_json_path)
+    tr_v, te_v = split_videos(all_celeb, test_size=0.20)
+    process_videos(tr_v, train_imgs, train_labels)
+    process_videos(te_v, test_imgs, test_labels)
+    print("Finished Celeb-DF-v2")
 
-    # # DFDC: split into train/val/test at video level
+    # # DFDC
     # _, all_dfdc = load_json(dfdc_json_path)
-    # dfdc_train_pool, dfdc_test_videos = split_videos(all_dfdc, test_size=0.20)
-    # dfdc_train_videos, dfdc_val_videos = split_videos(dfdc_train_pool, test_size=0.15)
-    # process_videos(dfdc_train_videos, train_imgs, train_labels)
-    # process_videos(dfdc_val_videos, val_imgs, val_labels)
-    # process_videos(dfdc_test_videos, test_imgs, test_labels)
+    # tr_v, te_v = split_videos(all_dfdc, test_size=0.20)
+    # process_videos(tr_v, train_imgs, train_labels)
+    # process_videos(te_v, test_imgs, test_labels)
     # print("Finished DFDC")
 
-    print(f"Train images: {len(train_imgs)} | Val images: {len(val_imgs)} | Test images: {len(test_imgs)}")
+    print(f"Train images: {len(train_imgs)} | Test images: {len(test_imgs)}")
 
     # Hyperparameters
     EPOCHS = 30
@@ -388,7 +381,6 @@ def main():
 
     # Datasets & loaders
     train_dataset = MyDataset(train_imgs, train_labels, aug_prob=0.5, test=False)
-    val_dataset = MyDataset(val_imgs, val_labels, aug_prob=0.0, test=True)
     test_dataset = MyDataset(test_imgs, test_labels, aug_prob=0.0, test=True)
 
     train_loader = DataLoader(
@@ -399,13 +391,6 @@ def main():
         pin_memory=True,
         drop_last=True,
     )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        num_workers=NUM_WORKERS,
-        pin_memory=True,
-    )
     test_loader = DataLoader(
         test_dataset,
         batch_size=BATCH_SIZE,
@@ -413,6 +398,9 @@ def main():
         num_workers=NUM_WORKERS,
         pin_memory=True,
     )
+
+    # Use test as validation
+    val_loader = test_loader
 
     # Model
     model = DeepfakeDetector(
@@ -452,16 +440,12 @@ def main():
     best_state_dict = None
 
     print("\n" + "─" * 60)
-    global_step = 0
-
     for epoch in range(1, EPOCHS + 1):
         print(f"Epoch {epoch}/{EPOCHS}")
 
         train_loss = train_one_epoch(
             model, train_loader, criterion, optimizer, scheduler, device, scaler
         )
-        global_step += len(train_loader)
-
         val_loss, val_auc = evaluate(model, val_loader, criterion, device)
 
         print(
@@ -488,15 +472,15 @@ def main():
             print(f"\nEarly stopping at epoch {epoch} (no improvement for {PATIENCE} epochs).")
             break
 
-    print(f"\nTraining complete. Best val AUC: {best_auc:.4f}")
+    print(f"\nTraining complete. Best held-out AUC: {best_auc:.4f}")
     print(f"Best checkpoint saved at: {best_ckpt}")
 
-    # Load best checkpoint and evaluate on the untouched test set
+    # Final held-out score
     if best_state_dict is not None:
         model.load_state_dict(best_state_dict)
 
     test_loss, test_auc = evaluate(model, test_loader, criterion, device)
-    print(f"Final test_loss={test_loss:.4f}  test_auc={test_auc:.4f}")
+    print(f"Final held-out loss={test_loss:.4f}  held-out auc={test_auc:.4f}")
 
 
 if __name__ == "__main__":
