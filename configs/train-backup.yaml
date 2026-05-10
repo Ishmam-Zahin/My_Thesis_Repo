@@ -5,25 +5,33 @@ data:
   fake_weight: 1.0
 
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model8.py"
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model9.py"   # ← update to your current file
   model_class: "MyModel"
   vit_name: "dinov2_vits14"
-  pretrained_path: null
-  vit_weight: null
+  vit_weight: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"  # optional but recommended
 
+  # === NEW: All model hyperparameters now configurable from here ===
+  num_gcn_layers: 2
+  num_clusters: 512
+  num_transformer_blocks: 2          # you can increase this
+  num_heads: 8
+  mlp_dim: 512
+  dropout: 0.2
+  num_of_temporal_edge_per_node: 4
 
 training:
   epochs: 50
   batch_size: 6
-  lr: 0.0001
+  lr: 0.0001           # LR for GNN + Transformer + classifier
+  vit_lr: 0.00001      # ← NEW: Much lower LR for ViT backbone (last 4 blocks + norm)
   optimizer: "AdamW"
   weight_decay: 0.00001
   num_frames: 8
   knn_k: 8
 
 pool:
-  lamda_min: 0.0
-  lamda_ortho: 0.0
+  lamda_min: 0.1
+  lamda_ortho: 0.01
 
 paths:
   checkpoint_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints"
@@ -35,4 +43,4 @@ early_stopping:
 
 seed: 42
 device: "cuda"
-resume: false # set true to resume from last_checkpoint.pth
+resume: false
