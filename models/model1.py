@@ -1,205 +1,257 @@
 import torch
 from torch import nn
+from torch_geometric.data import Data, Batch
+from torch_geometric.nn import GATv2Conv
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
+from torch_geometric.utils import to_dense_adj
+from torch_geometric.nn.dense import dense_mincut_pool
 
 
-class Vit(nn.Module):
-    def __init__(self, vit_name='dinov2_vits14'):
+class VideoFeatureExtractor(nn.Module):
+    """
+    Frozen DINOv2 ViT that extracts patch tokens for each frame of a video.
+    Input: [B, T, 3, H, W]
+    Output: [B, T*N, D] where N=256, D=384 for dinov2_vits14
+    """
+    def __init__(self, vit_name='dinov2_vits14', feature_dim=384, total_nodes=256, weight_path = None):
         super().__init__()
         self.vit = torch.hub.load('facebookresearch/dinov2', vit_name)
-        for param in self.vit.parameters():
-            param.requires_grad = False
-        self.vit.eval()
 
-    def forward(self, x):
-        # Returns only patch tokens: shape (B, N, D)
-        # For dinov2_vits14 on 224×224 → N = 256, D = 384
-        features = self.vit.forward_features(x)
-        return features['x_norm_patchtokens']
+        if weight_path is not None:
+            ckpt = torch.load(weight_path, map_location='cpu', weights_only=False)
+
+            state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
+
+            # Keep only the backbone weights and remove the "vit." prefix
+            vit_state_dict = {
+                k.replace("vit.", "", 1): v
+                for k, v in state_dict.items()
+                if k.startswith("vit.")
+            }
+
+            missing, unexpected = self.vit.load_state_dict(vit_state_dict, strict=True)
+            print("Missing keys:", missing)
+            print("Unexpected keys:", unexpected)
+
+        # Freeze everything first
+        for p in self.vit.parameters():
+            p.requires_grad = False
+
+        self.vit.eval()
+        self.D = feature_dim
+        self.total_nodes = total_nodes
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, C, H, W = x.shape
+        x_flat = x.view(B * T, C, H, W)  # [B*T, 3, 224, 224]
+        features = self.vit.forward_features(x_flat)
+        patch_tokens = features['x_norm_patchtokens']  # [B*T, N=256, D=384]
+        # Reshape back to per-video
+        return patch_tokens.reshape(B, T * self.total_nodes, self.D)  # [B, T*N, D]
 
 
 class TransformerBlock(nn.Module):
-    """Exact pre-norm Transformer block matching the paper (Eq. 6-7)."""
-    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, dropout: float = 0.1):
+    """
+    Standard pre-norm Transformer block (matches paper equations 5-10).
+    Uses Multihead Self-Attention (MSA) + MLP with residual connections.
+    """
+    def __init__(self, dim: int, heads: int = 8, mlp_dim: int = 512, dropout: float = 0.1):
         super().__init__()
-        self.ln1 = nn.LayerNorm(d_model)
-        self.self_attn = nn.MultiheadAttention(
-            embed_dim=d_model,
-            num_heads=nhead,
+        self.ln1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=dim,
+            num_heads=heads,
             dropout=dropout,
             batch_first=True,
-            add_zero_attn=False,
+            add_zero_attn=False
         )
-        self.ln2 = nn.LayerNorm(d_model)
+        self.ln2 = nn.LayerNorm(dim)
         self.mlp = nn.Sequential(
-            nn.Linear(d_model, dim_feedforward),
-            nn.ReLU(),                    # paper uses ReLU in GCN; consistent here
+            nn.Linear(dim, mlp_dim),
+            nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(dim_feedforward, d_model),
-            nn.Dropout(dropout),
+            nn.Linear(mlp_dim, dim),
+            nn.Dropout(dropout)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, seq_len, d_model)
-        # Pre-norm + residual exactly as in paper
-        attn_input = self.ln1(x)
-        attn_out, _ = self.self_attn(attn_input, attn_input, attn_input, need_weights=False)
+        # x: [B, seq_len, dim]
+        # Pre-norm MSA + residual
+        x_norm = self.ln1(x)
+        attn_out, _ = self.attn(x_norm, x_norm, x_norm)
         x = x + attn_out
 
-        mlp_input = self.ln2(x)
-        mlp_out = self.mlp(mlp_input)
+        # Pre-norm MLP + residual
+        x_norm = self.ln2(x)
+        mlp_out = self.mlp(x_norm)
         x = x + mlp_out
         return x
 
 
-class My_Model(nn.Module):
+class MyModel(nn.Module):
+    """
+    Completed model inspired by the paper:
+    - DINOv2 ViT feature extractor (frozen, self-supervised)
+    - Graph construction (via create_frame_graph)
+    - Multi-layer GCN (local structure)
+    - Min-cut pooling (node reduction, as in paper)
+    - Transformer blocks (global dependencies via MSA + MLP)
+    - Class token + final classifier (binary: normal vs deepfake)
+    """
     def __init__(
         self,
-        vit_name: str = "dinov2_vits14",
-        k_neighbour: int = 8,
-        num_gcn_layers: int = 3,          # paper ablation best = 3; text mentions "a" but we follow best reported
-        num_transformer_blocks: int = 3,  # paper main implementation
-        d_model: int = 256,               # exact value from paper §IV-B
-        nhead: int = 8,                   # paper
-        dim_feedforward: int = 512,       # paper
-        dropout: float = 0.1,
+        vit_name: str = 'dinov2_vits14',
+        feature_dim: int = 384,
+        num_gcn_layers: int = 2,
+        num_clusters: int = 512,          # pooled nodes after min-cut
+        num_transformer_blocks: int = 1,  # as tested in paper ablation (TB=3)
+        num_heads: int = 8,               # paper: 8 self-attention heads
+        mlp_dim: int = 512,               # paper: MLP size of 512
+        dropout: float = 0.2,
+        num_of_frames = 8,
+        num_of_nodes_per_frame = 256,
+        num_of_temporal_edge_per_node = 4,
+        video_spatial_src_edges = None,
+        video_spatial_dst_edges = None,
+        vit_weight_path = None,
+
     ):
         super().__init__()
-        self.vit_name = vit_name
-        self.vit = Vit(vit_name=self.vit_name)
+        self.feature_dim = feature_dim
+        self.num_clusters = num_clusters
+        self.num_transformer_blocks = num_transformer_blocks
+        self.num_heads = num_heads
+        self.num_of_frames = num_of_frames
+        self.num_of_nodes_per_frame = num_of_nodes_per_frame
+        self.num_of_temporal_edge_per_node = num_of_temporal_edge_per_node
+        self.video_spatial_src_edges = video_spatial_src_edges
+        self.video_spatial_dst_edges = video_spatial_dst_edges
 
-        # DINOv2 vits14 patch tokens are 384-dim; project to paper's d_model
-        self.vit_dim = 384
-        self.d_model = d_model
-        self.feature_proj = (
-            nn.Linear(self.vit_dim, d_model)
-            if self.vit_dim != d_model
-            else nn.Identity()
-        )
+        # Feature extractor (frozen DINOv2)
+        self.vit = VideoFeatureExtractor(vit_name=vit_name, weight_path = vit_weight_path)
 
-        self.k = k_neighbour
-
-        # ------------------- GCN (paper Eq. 4) -------------------
+        assert feature_dim % num_heads == 0
+        head_dim = feature_dim // num_heads
         self.gcn_layers = nn.ModuleList()
         for _ in range(num_gcn_layers):
-            self.gcn_layers.append(GCNConv(d_model, d_model))
+            self.gcn_layers.append(
+                GATv2Conv(
+                    in_channels=feature_dim,         # 768
+                    out_channels=head_dim,           # 48 (per head)
+                    heads=num_heads,                 # 16
+                    concat=True,                     # concat → output is 48*16 = 768 ✅
+                    dropout=dropout,
+                    add_self_loops=True,
+                )
+            )
+        
 
-        # ------------------- Transformer (paper Eq. 5-10) -------------------
-        self.class_token = nn.Parameter(torch.zeros(1, 1, d_model))
-        self.transformer_blocks = nn.ModuleList(
-            [
-                TransformerBlock(d_model, nhead, dim_feedforward, dropout)
-                for _ in range(num_transformer_blocks)
-            ]
-        )
+        # Assignment network for min-cut pooling
+        self.assign_net = nn.Linear(feature_dim, num_clusters)
 
-        # ------------------- Classifier -------------------
-        self.dropout = nn.Dropout(dropout)
-        self.classifier = nn.Linear(d_model, 2)  # logits: [real, fake]
+        # Learnable class token + positional embeddings
+        # (class token + pooled nodes; adjacency is already captured by GCN)
+        self.class_token = nn.Parameter(torch.zeros(1, 1, feature_dim))
 
-    def create_graph_edge_index(
-        self,
-        patch_features: torch.Tensor,
-        k: int | None = None,
-    ) -> torch.Tensor:
+        # Transformer blocks (global dependencies)
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(
+                dim=feature_dim,
+                heads=num_heads,
+                mlp_dim=mlp_dim,
+                dropout=dropout
+            )
+            for _ in range(num_transformer_blocks)
+        ])
+
+        # Final layers
+        self.norm = nn.LayerNorm(feature_dim)
+        self.classifier = nn.Linear(feature_dim, 2)  # binary: normal / deepfake
+    
+
+    def add_temporal_edges(
+            self,
+            frame_patches,
+            edge_src_global,
+            edge_dst_global
+    ):
+        patches = frame_patches.view(self.num_of_frames, self.num_of_nodes_per_frame, -1)
+        frame_patch_norm = F.normalize(patches, dim = -1)
+
+        for t in range(self.num_of_frames - 1):
+            patch_curr = frame_patch_norm[t]
+            patch_next = frame_patch_norm[t + 1]
+            sim = torch.mm(patch_curr, patch_next.t())
+            _, top_idx = torch.topk(sim, k = self.num_of_temporal_edge_per_node, dim = -1)
+            edge_temporal_src_local = torch.arange(self.num_of_nodes_per_frame, device = frame_patches.device).unsqueeze(1).expand(-1, self.num_of_temporal_edge_per_node).reshape(-1)
+            edge_temporal_dst_local = top_idx.reshape(-1)
+            edge_temporal_src_local += (t * self.num_of_nodes_per_frame)
+            edge_temporal_dst_local += ((t + 1) * self.num_of_nodes_per_frame)
+            edge_src_global.append(torch.cat([edge_temporal_src_local, edge_temporal_dst_local]))
+            edge_dst_global.append(torch.cat([edge_temporal_dst_local, edge_temporal_src_local]))
+        
+        return torch.stack([torch.cat(edge_src_global), torch.cat(edge_dst_global)], dim = 0)
+
+    def forward(self, x: torch.Tensor):
         """
-        Exactly reproduces the paper's undirected K-NN spatial graph (§III-A).
-        - Nodes = image patches arranged on a square grid.
-        - Edges = K nearest neighbors by spatial (row, col) distance.
-        - Symmetrized → undirected graph.
-        - No self-loops (GCNConv adds them automatically).
-        - Fully batched with node offset.
-        """
-        if k is None:
-            k = self.k
-
-        # Handle single-image input
-        if patch_features.dim() == 2:
-            patch_features = patch_features.unsqueeze(0)
-
-        B, N, D = patch_features.shape
-        device = patch_features.device
-
-        # Grid layout (paper uses fixed 16×16 = 256 patches for 224×224)
-        grid_size = int(N ** 0.5)
-        if grid_size * grid_size != N:
-            raise ValueError(f"Patch count {N} must be perfect square (got {grid_size}×{grid_size})")
-
-        # Patch (row, col) coordinates - identical for every image
-        indices = torch.arange(N, device=device)
-        rows = indices // grid_size
-        cols = indices % grid_size
-        positions = torch.stack([rows, cols], dim=1).float()  # (N, 2)
-
-        # Pairwise Euclidean distances
-        diff = positions.unsqueeze(1) - positions.unsqueeze(0)  # (N, N, 2)
-        dist_matrix = torch.sqrt((diff ** 2).sum(dim=-1))      # (N, N)
-        dist_matrix.fill_diagonal_(float("inf"))               # no self-loops
-
-        # K nearest neighbors (directed)
-        _, knn_idx = torch.topk(dist_matrix, k=k, dim=1, largest=False)  # (N, K)
-
-        # Adjacency matrix (bool = 4× memory saving)
-        row_idx = torch.arange(N, device=device).unsqueeze(1).expand(-1, k)
-        adj = torch.zeros((N, N), dtype=torch.bool, device=device)
-        adj[row_idx, knn_idx] = True
-
-        # Symmetrize → undirected graph (Aij = Aji) as required by the paper
-        adj = adj | adj.t()
-
-        # PyG edge_index (2, E)
-        src, dst = torch.where(adj)
-        edge_index_single = torch.stack([src, dst], dim=0)  # (2, E)
-
-        # Batch handling
-        if B == 1:
-            return edge_index_single.long()
-
-        edge_list = []
-        for b in range(B):
-            offset = b * N
-            edge_list.append(edge_index_single + offset)
-        return torch.cat(edge_list, dim=1).long()  # (2, B*E)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: (B, 3, H, W) - typically 224×224, normalized as required by DINOv2
-        Returns: logits (B, 2)
+        x:          video tensor [B, T, 3, H, W]
+        edge_index: graph edges from create_frame_graph (same structure for all videos)
+        Returns:    logits [B, 2]
         """
         B = x.shape[0]
+        num_nodes_per_video = x.shape[1] * 256  # T * N_patches
 
-        # 1. Self-supervised ViT feature extractor (paper §III-B)
-        patch_features = self.vit(x)                    # (B, N, vit_dim)
-        patch_features = self.feature_proj(patch_features)  # (B, N, d_model)
+        # 1. Extract patch features (ViT)
+        features = self.vit(x)  # [B, T*N, D] = [B, num_nodes_per_video, D]
 
-        # 2. Build graph (paper §III-A)
-        edge_index = self.create_graph_edge_index(patch_features)  # (2, B*E)
+        # 2. Build PyG batch (each video = one graph)
+        data_list = []
+        for i in range(B):
+            edge_index = self.add_temporal_edges(
+                features[i],
+                edge_src_global = [self.video_spatial_src_edges],
+                edge_dst_global = [self.video_spatial_dst_edges],
+            )
+            data = Data(x=features[i], edge_index=edge_index)
+            data_list.append(data)
+        batched_data = Batch.from_data_list(data_list)
 
-        # 3. Flatten for GNN
-        N = patch_features.shape[1]
-        node_features = patch_features.view(B * N, self.d_model)  # (B*N, d_model)
+        x = batched_data.x                  # [B * num_nodes_per_video, D]
+        edge_index = batched_data.edge_index
+        batch = batched_data.batch
 
-        # 4. Multi-layer GCN (paper Eq. 4)
-        h = node_features
+        # 3. GCN layers (local structure)
         for gcn in self.gcn_layers:
-            h = gcn(h, edge_index)
-            h = torch.relu(h)
+            x = gcn(x, edge_index)
+            x = F.relu(x)
 
-        # 5. Reshape back per image
-        h = h.view(B, N, self.d_model)
+        # 4. Reshape back to per-video
+        x = torch.split(x, split_size_or_sections=num_nodes_per_video)
+        x = torch.stack(x, dim=0)           # [B, num_nodes_per_video, D]
 
-        # 6. Add learnable class token (standard ViT-style for classification)
-        class_tokens = self.class_token.expand(B, -1, -1)  # (B, 1, d_model)
-        z = torch.cat([class_tokens, h], dim=1)            # (B, 1+N, d_model)
+        # 5. Min-cut pooling (node reduction, as in paper)
+        s = self.assign_net(x)              # [B, num_nodes_per_video, num_clusters]
+        adj = to_dense_adj(edge_index, batch=batch)  # [B, num_nodes_per_video, num_nodes_per_video]
+        x_pooled, adj_pooled, mincut_loss, ortho_loss = dense_mincut_pool(
+            x, adj, s
+        )                                   # x_pooled: [B, num_clusters, D]
 
-        # 7. Graph-Transformer blocks (paper Eq. 5-10)
+        # 6. Transformer classifier (global dependencies)
+        # Add class token
+        cls_tokens = self.class_token.expand(B, -1, -1)  # [B, 1, D]
+        x = torch.cat((cls_tokens, x_pooled), dim=1)     # [B, 1 + num_clusters, D]
+
+        # Transformer blocks
         for block in self.transformer_blocks:
-            z = block(z)
+            x = block(x)
 
-        # 8. Classification head (use class token)
-        cls_feat = z[:, 0, :]          # (B, d_model)
-        cls_feat = self.dropout(cls_feat)
-        logits = self.classifier(cls_feat)  # (B, 2)
+        # Take class token output
+        x = x[:, 0]                         # [B, D]
 
-        return logits
+        # Final classification head
+        x = self.norm(x)
+        logits = self.classifier(x)         # [B, 2]
+
+        # (Optional: you can return mincut_loss + ortho_loss for training)
+        # return logits, mincut_loss, ortho_loss
+        return (logits, mincut_loss, ortho_loss)

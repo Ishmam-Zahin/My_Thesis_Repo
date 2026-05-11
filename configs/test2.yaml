@@ -1,0 +1,27 @@
+model:
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model3.py"
+  model_class: "MyModel"
+  vit_name: "dinov2_vits14"
+  checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/model3/best_model.pth"
+  vit_weight: null
+
+  # Load model hyperparameters from train.yaml
+  train_config_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/configs/train2.yaml"
+
+data:
+  json_root: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/rearrange/dataset_json"
+  dataset_names:
+    - "UADFV"
+    - "Celeb-DF-v1"
+    - "Celeb-DF-v2"
+    - "DFDC"
+
+paths:
+  log_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/test_logs"
+
+training:
+  batch_size: 6
+  num_frames: 8
+  device: "cuda"
+
+seed: 42

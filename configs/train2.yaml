@@ -1,0 +1,36 @@
+data:
+  json_root: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/rearrange/dataset_json"
+  dataset_name: "FaceForensics++"
+  # No class weights anymore
+
+model:
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model3.py"
+  model_class: "MyModel"
+  vit_name: "dinov2_vits14"
+  vit_weight: null
+
+  num_transformer_blocks: 2
+  num_heads: 8
+  mlp_dim: 512
+  dropout: 0.2
+
+training:
+  epochs: 50
+  batch_size: 6
+  lr: 0.0001
+  vit_lr: 0.00001
+  optimizer: "AdamW"
+  weight_decay: 0.0001
+  num_frames: 8
+
+paths:
+  checkpoint_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints"
+  log_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/logs"
+
+early_stopping:
+  patience: 10
+  delta: 0.0005
+
+seed: 42
+device: "cuda"
+resume: false

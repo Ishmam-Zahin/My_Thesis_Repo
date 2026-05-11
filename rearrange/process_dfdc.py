@@ -54,7 +54,7 @@ def get_labels(video_paths, metadata):
 
 def main():
     dataset_name = "DFDC"
-    dataset_root = "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/datasets"
+    dataset_root = "/home/cse/Desktop/Deepfake_Datasets/test"
     dataset_path = Path(dataset_root, dataset_name, "test")
     metadata_path = Path(dataset_path, "metadata.json")
 
