@@ -4,7 +4,7 @@ data:
   # No class weights anymore
 
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model3.py"
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model4.py"
   model_class: "MyModel"
   vit_name: "dinov2_vits14"
   vit_weight: null
@@ -28,7 +28,7 @@ paths:
   log_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/logs"
 
 early_stopping:
-  patience: 10
+  patience: 5
   delta: 0.0005
 
 seed: 42

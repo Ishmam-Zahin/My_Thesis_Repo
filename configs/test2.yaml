@@ -1,8 +1,8 @@
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model3.py"
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model4.py"
   model_class: "MyModel"
   vit_name: "dinov2_vits14"
-  checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/model3/best_model.pth"
+  checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/model4/best_model.pth"
   vit_weight: null
 
   # Load model hyperparameters from train.yaml

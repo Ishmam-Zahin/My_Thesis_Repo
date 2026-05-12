@@ -123,9 +123,9 @@ def main():
     model = ModelClass(
         vit_name=model_config['vit_name'],
         feature_dim=384,
-        num_transformer_blocks=model_config.get('num_transformer_blocks', 2),
+        # num_transformer_blocks=model_config.get('num_transformer_blocks', 2),
         num_heads=model_config.get('num_heads', 8),
-        mlp_dim=model_config.get('mlp_dim', 512),
+        # mlp_dim=model_config.get('mlp_dim', 512),
         dropout=model_config.get('dropout', 0.2),
         num_of_frames=config['training']['num_frames'],
         vit_weight_path=model_config.get('vit_weight')
