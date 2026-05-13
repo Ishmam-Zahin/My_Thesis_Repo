@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from sklearn.metrics import accuracy_score, roc_auc_score, precision_score, recall_score, confusion_matrix
 from torch.utils.data import DataLoader
@@ -17,6 +18,22 @@ from tqdm import tqdm
 from torchvision import transforms
 
 from helpers.dataset_loader import get_dataset
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2.0, alpha=None):
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha  # optional class weights
+
+    def forward(self, logits, targets):
+        ce_loss = F.cross_entropy(logits, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = (1 - pt) ** self.gamma * ce_loss
+        if self.alpha is not None:
+            alpha_t = self.alpha[targets]
+            focal_loss = alpha_t * focal_loss
+        return focal_loss.mean()
 
 
 def load_model_class(model_path: str, class_name: str):
@@ -118,16 +135,27 @@ def main():
             pin_memory=torch.cuda.is_available()
         )
 
+    # ====================== LOSS SETUP ======================
+    focal_gamma = config['training'].get('focal_gamma', 2.0)
+    mincut_weight = config['training'].get('mincut_weight', 0.05)
+    ortho_weight = config['training'].get('ortho_weight', 0.05)
+
+    criterion = FocalLoss(gamma=focal_gamma).to(device)
+    logging.info(f"✅ Using Focal Loss (gamma={focal_gamma}) + "
+                 f"MinCut weight={mincut_weight} + Ortho weight={ortho_weight}")
+
     # Model
     ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
     model = ModelClass(
         vit_name=model_config['vit_name'],
         feature_dim=384,
-        # num_transformer_blocks=model_config.get('num_transformer_blocks', 2),
-        num_heads=model_config.get('num_heads', 8),
-        # mlp_dim=model_config.get('mlp_dim', 512),
         dropout=model_config.get('dropout', 0.2),
         num_of_frames=config['training']['num_frames'],
+        num_gcn_layers=model_config.get('num_gcn_layers', 2),
+        num_clusters=model_config.get('num_clusters', 512),
+        num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
+        num_heads=model_config.get('num_heads', 8),
+        mlp_dim=model_config.get('mlp_dim', 512),
         vit_weight_path=model_config.get('vit_weight')
     ).to(device)
 
@@ -149,9 +177,6 @@ def main():
         {'params': vit_params, 'lr': config['training'].get('vit_lr', 1e-5)},
         {'params': other_params, 'lr': config['training']['lr']}
     ], weight_decay=config['training'].get('weight_decay', 1e-4))
-
-    # === NORMAL CROSSENTROPY LOSS (no class weights) ===
-    criterion = nn.CrossEntropyLoss()
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=2
@@ -187,12 +212,15 @@ def main():
             labels = labels.to(device)
             optimizer.zero_grad()
 
-            logits = model(videos)
-            loss = criterion(logits, labels)
-            loss.backward()
+            logits, mincut_loss, ortho_loss = model(videos)
+
+            main_loss = criterion(logits, labels)
+            total_loss = main_loss + mincut_weight * mincut_loss + ortho_weight * ortho_loss
+
+            total_loss.backward()
             optimizer.step()
 
-            train_loss += loss.item()
+            train_loss += total_loss.item()
             probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
             train_preds.extend(probs)
             train_labels.extend(labels.cpu().numpy())
@@ -211,7 +239,7 @@ def main():
                 for videos, labels in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]"):
                     videos = videos.to(device)
                     labels = labels.to(device)
-                    logits = model(videos)
+                    logits, _, _ = model(videos)          # ignore auxiliary losses in validation
                     loss = criterion(logits, labels)
                     val_loss += loss.item()
 
@@ -223,13 +251,10 @@ def main():
             val_auc = roc_auc_score(val_labels, val_preds)
             val_acc = accuracy_score(val_labels, (np.array(val_preds) > 0.5).astype(int))
 
-            # === New: Detailed Validation Metrics ===
             val_labels_np = np.array(val_labels)
             val_preds_np = (np.array(val_preds) > 0.5).astype(int)
-
             cm = confusion_matrix(val_labels_np, val_preds_np)
             tn, fp, fn, tp = cm.ravel()
-
             precision = precision_score(val_labels_np, val_preds_np, zero_division=0)
             recall = recall_score(val_labels_np, val_preds_np, zero_division=0)
 
@@ -243,12 +268,9 @@ def main():
             )
             logging.info(
                 f"Confusion Matrix (Real=0, Fake=1):\n"
-                f"  TN (Correctly predicted Real) : {tn}\n"
-                f"  FP (Real wrongly predicted as Fake): {fp}\n"
-                f"  FN (Fake wrongly predicted as Real): {fn}\n"
-                f"  TP (Correctly predicted Fake)   : {tp}"
+                f"  TN: {tn} | FP: {fp}\n"
+                f"  FN: {fn} | TP: {tp}"
             )
-
         else:
             val_loss = train_loss
             val_auc = train_auc
