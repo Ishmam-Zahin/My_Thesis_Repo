@@ -209,7 +209,7 @@ class FusedModel(nn.Module):
         edge_src, edge_dst = [], []
         for t in range(self.num_of_frames - 1):
             sim = torch.mm(frame_patch_norm[t], frame_patch_norm[t + 1].t())
-            _, top_idx = torch.topk(sim, k=4, dim=-1)
+            _, top_idx = torch.topk(sim, k=1, dim=-1)
             src_local = torch.arange(256, device=frame_patches.device).unsqueeze(1).expand(-1, 4).reshape(-1)
             dst_local = top_idx.reshape(-1)
             offset_curr = t * 256

@@ -60,7 +60,7 @@ def main():
     with open(args.config, 'r') as f:
         test_config = yaml.safe_load(f)
 
-    # Load train config for model hyperparameters
+    # Load train config for model hyperparameters (keeps all important model settings in one place)
     train_config_path = test_config['model'].get('train_config_path')
     if train_config_path and Path(train_config_path).exists():
         with open(train_config_path, 'r') as f:
@@ -85,13 +85,13 @@ def main():
 
     # Model Creation
     ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
-    
+   
     model = ModelClass(
         vit_name=model_config['vit_name'],
         feature_dim=384,
         dropout=model_config.get('dropout', 0.2),
         num_of_frames=test_config['training']['num_frames'],
-        # All graph-related parameters come from train.yaml
+        # All graph-related parameters come from train.yaml (num_gcn_layers, num_clusters, etc.)
         num_gcn_layers=model_config.get('num_gcn_layers', 2),
         num_clusters=model_config.get('num_clusters', 512),
         num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
@@ -142,7 +142,11 @@ def main():
                 videos = videos.to(device)
                 labels = labels.to(device)
 
-                logits = model(videos)                     # Only logits now
+                # === CRITICAL FIX FOR FUSED MODEL ===
+                # FusedModel.forward() returns (logits, mincut_loss, ortho_loss)
+                # We only care about logits for testing/metrics
+                logits, _, _ = model(videos)
+
                 loss = nn.CrossEntropyLoss()(logits, labels)
                 test_loss += loss.item()
 
