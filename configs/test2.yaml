@@ -1,8 +1,8 @@
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model6.py"
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model7.py"
   model_class: "FusedModel"
   vit_name: "dinov2_vits14"
-  checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/model6/best_model.pth"
+  checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/model7/best_model.pth"
   vit_weight: null
   train_config_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/configs/train2.yaml"   # ← this is where all fused-model params live
 

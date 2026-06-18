@@ -3,7 +3,7 @@ data:
   dataset_name: "FaceForensics++"
 
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model6.py"   # ← change to your fused model file
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model7.py"   # ← change to your fused model file
   model_class: "FusedModel"
   vit_name: "dinov2_vits14"
   vit_weight: null
@@ -11,7 +11,7 @@ model:
   # Graph path hyperparameters
   num_gcn_layers: 3
   num_clusters: 512          # MinCut pooling target
-  num_transformer_blocks: 3  # for the graph transformer
+  num_transformer_blocks: 2  # for the graph transformer
   num_heads: 8
   mlp_dim: 512
   dropout: 0.2
