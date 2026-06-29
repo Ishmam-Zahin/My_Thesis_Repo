@@ -8,7 +8,7 @@ model:
   vit_name: "dinov2_vits14"
   vit_weight: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"
   # Graph path hyperparameters
-  num_gcn_layers: 3
+  num_gcn_layers: 2
   num_clusters: 512
   num_transformer_blocks: 2
   num_heads: 8
