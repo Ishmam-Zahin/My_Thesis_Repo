@@ -54,6 +54,13 @@ def get_transforms():
 def main():
     parser = argparse.ArgumentParser(description="Deepfake Detection Testing")
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument(
+        "--branch-ablation",
+        type=str,
+        choices=["none", "cls", "graph"],
+        default="none",
+        help="Zero out one branch to measure its contribution",
+    )
     args = parser.parse_args()
 
     # Load test config
@@ -100,6 +107,8 @@ def main():
         vit_weight_path=model_config.get('vit_weight')
     ).to(device)
 
+    branch_ablation = None if args.branch_ablation == "none" else args.branch_ablation
+
     # Load Checkpoint
     checkpoint_path = model_config.get('checkpoint_path')
     if checkpoint_path:
@@ -142,10 +151,10 @@ def main():
                 videos = videos.to(device)
                 labels = labels.to(device)
 
-                # === CRITICAL FIX FOR FUSED MODEL ===
-                # FusedModel.forward() returns (logits, mincut_loss, ortho_loss)
-                # We only care about logits for testing/metrics
-                logits, _, _ = model(videos)
+                try:
+                    logits, _, _ = model(videos, branch_ablation=branch_ablation)
+                except TypeError:
+                    logits, _, _ = model(videos)
 
                 loss = nn.CrossEntropyLoss()(logits, labels)
                 test_loss += loss.item()
@@ -188,7 +197,8 @@ def main():
             "test_auc": float(test_auc),
             "precision": float(test_precision),
             "recall": float(test_recall),
-            "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)}
+            "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
+            "branch_ablation": branch_ablation or "none"
         }
 
     # Save results
