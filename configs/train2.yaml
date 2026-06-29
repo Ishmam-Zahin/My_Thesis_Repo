@@ -3,15 +3,14 @@ data:
   dataset_name: "FaceForensics++"
 
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model7.py"   # ← change to your fused model file
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model9.py"
   model_class: "FusedModel"
   vit_name: "dinov2_vits14"
-  vit_weight: null
-
+  vit_weight: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"
   # Graph path hyperparameters
   num_gcn_layers: 3
-  num_clusters: 512          # MinCut pooling target
-  num_transformer_blocks: 2  # for the graph transformer
+  num_clusters: 512
+  num_transformer_blocks: 2
   num_heads: 8
   mlp_dim: 512
   dropout: 0.2
@@ -19,14 +18,11 @@ model:
 training:
   epochs: 50
   batch_size: 6
-  lr: 0.0001
-  vit_lr: 0.00001
+  lr: 0.0001           # single LR — ViT is frozen, only graph/fusion/BiLSTM params train
   optimizer: "AdamW"
   weight_decay: 0.0001
   num_frames: 8
-
-  # New loss settings
-  focal_gamma: 2.0      # higher = harder examples get more weight
+  focal_gamma: 2.0
   mincut_weight: 0.1
   ortho_weight: 0.01
 

@@ -166,15 +166,26 @@ class MyDataset(Dataset):
 # Model
 # ─────────────────────────────────────────────
 
+# All PyTorch normalization layer types
+NORM_LAYERS = (
+    nn.LayerNorm,
+    nn.BatchNorm1d,
+    nn.BatchNorm2d,
+    nn.BatchNorm3d,
+    nn.SyncBatchNorm,
+    nn.GroupNorm,
+    nn.InstanceNorm1d,
+    nn.InstanceNorm2d,
+    nn.InstanceNorm3d,
+)
+
 class DeepfakeDetector(nn.Module):
     """
-    DINOv2 ViT-S backbone (last 2 blocks + norm unfrozen)
+    DINOv2 ViT-S backbone (last 2 blocks + all norm layers unfrozen)
     + lightweight MLP classification head.
-
     Input : [B, 3, 224, 224]
     Output: [B, 2] logits
     """
-
     def __init__(
         self,
         vit_name="dinov2_vits14",
@@ -184,7 +195,6 @@ class DeepfakeDetector(nn.Module):
         dropout=0.3,
     ):
         super().__init__()
-
         self.vit = torch.hub.load("facebookresearch/dinov2", vit_name)
 
         # Freeze everything first
@@ -192,15 +202,15 @@ class DeepfakeDetector(nn.Module):
             p.requires_grad = False
 
         # Unfreeze last 2 transformer blocks
-        if hasattr(self.vit, "blocks"):
-            for block in self.vit.blocks[-2:]:
-                for p in block.parameters():
-                    p.requires_grad = True
-
-        # Unfreeze final LayerNorm
-        if hasattr(self.vit, "norm"):
-            for p in self.vit.norm.parameters():
+        for block in self.vit.blocks[-2:]:
+            for p in block.parameters():
                 p.requires_grad = True
+
+        # Unfreeze ALL normalization layers of any type
+        for name, module in self.vit.named_modules():
+            if isinstance(module, NORM_LAYERS):
+                for p in module.parameters():
+                    p.requires_grad = True
 
         self.head = nn.Sequential(
             nn.Linear(feature_dim * 2, mlp_hidden),
@@ -214,11 +224,9 @@ class DeepfakeDetector(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.vit.forward_features(x)
-
         cls_token = out["x_norm_clstoken"]
         patch_tokens = out["x_norm_patchtokens"]
         patch_mean = patch_tokens.mean(dim=1)
-
         feats = torch.cat([cls_token, patch_mean], dim=-1)
         logits = self.head(feats)
         return logits
@@ -351,12 +359,12 @@ def main():
     process_videos(ff_test_videos, test_imgs, test_labels)
     print("Finished FF++")
 
-    # Celeb-DF-v2
-    _, all_celeb = load_json(celeb_json_path)
-    tr_v, te_v = split_videos(all_celeb, test_size=0.20)
-    process_videos(tr_v, train_imgs, train_labels)
-    process_videos(te_v, test_imgs, test_labels)
-    print("Finished Celeb-DF-v2")
+    # # Celeb-DF-v2
+    # _, all_celeb = load_json(celeb_json_path)
+    # tr_v, te_v = split_videos(all_celeb, test_size=0.20)
+    # process_videos(tr_v, train_imgs, train_labels)
+    # process_videos(te_v, test_imgs, test_labels)
+    # print("Finished Celeb-DF-v2")
 
     # # DFDC
     # _, all_dfdc = load_json(dfdc_json_path)

@@ -162,21 +162,15 @@ def main():
     if torch.cuda.is_available():
         summary(model, input_data=(torch.randn(1, config['training']['num_frames'], 3, 224, 224).to(device)), device="cuda")
 
-    # Optimizer
-    vit_params = []
-    other_params = []
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        if "vit" in name.lower():
-            vit_params.append(param)
-        else:
-            other_params.append(param)
+    # Optimizer — single LR since ViT is fully frozen (loaded from fine-tuned weights)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    logging.info(f"Trainable parameters: {sum(p.numel() for p in trainable_params):,}")
 
-    optimizer = optim.AdamW([
-        {'params': vit_params, 'lr': config['training'].get('vit_lr', 1e-5)},
-        {'params': other_params, 'lr': config['training']['lr']}
-    ], weight_decay=config['training'].get('weight_decay', 1e-4))
+    optimizer = optim.AdamW(
+        trainable_params,
+        lr=config['training']['lr'],
+        weight_decay=config['training'].get('weight_decay', 1e-4)
+    )
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=2
