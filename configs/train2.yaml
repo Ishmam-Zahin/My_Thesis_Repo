@@ -3,7 +3,7 @@ data:
   dataset_name: "FaceForensics++"
 
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model9.py"
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model10.py"
   model_class: "FusedModel"
   vit_name: "dinov2_vits14"
   vit_weight: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"
@@ -14,11 +14,16 @@ model:
   num_heads: 8
   mlp_dim: 512
   dropout: 0.2
+  tau_s: 0.6
+  tau_t: 0.6
+  graph_eps: 0.0001
+  local_window: 3
+  spectral_hidden_dim: 64
 
 training:
   epochs: 50
   batch_size: 6
-  lr: 0.0001           # single LR — ViT is frozen, only graph/fusion/BiLSTM params train
+  lr: 0.0001 # single LR — ViT is frozen, only graph/fusion/BiLSTM params train
   optimizer: "AdamW"
   weight_decay: 0.0001
   num_frames: 8

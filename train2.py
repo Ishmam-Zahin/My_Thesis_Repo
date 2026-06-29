@@ -156,6 +156,11 @@ def main():
         num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
         num_heads=model_config.get('num_heads', 8),
         mlp_dim=model_config.get('mlp_dim', 512),
+        tau_s=model_config.get('tau_s', 0.6),
+        tau_t=model_config.get('tau_t', 0.6),
+        graph_eps=model_config.get('graph_eps', 1e-4),
+        local_window=model_config.get('local_window', 3),
+        spectral_hidden_dim=model_config.get('spectral_hidden_dim', 64),
         vit_weight_path=model_config.get('vit_weight')
     ).to(device)
 

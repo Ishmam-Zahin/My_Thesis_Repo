@@ -1,10 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torch_geometric.data import Data, Batch
 from torch_geometric.nn import GATv2Conv
-from torch_geometric.utils import to_dense_adj
-from torch_geometric.nn.dense import dense_mincut_pool
 
 
 def get_spatio_temporal_edges(T=8, N=256, K=8):
@@ -84,9 +81,9 @@ class VideoFeatureExtractor(nn.Module):
         ckpt = torch.load(weight_path, map_location='cpu', weights_only=False)
 
         if 'best_auc' in ckpt:
-            print(f'best auc of vit is: {ckpt['best_auc']}')
+            print(f"best auc of vit is: {ckpt['best_auc']}")
         if 'epoch' in ckpt:
-            print(f'best auc epoch is: {ckpt['epoch']}')
+            print(f"best auc epoch is: {ckpt['epoch']}")
 
         # fine_tune.py saves under "model_state_dict" (full DeepfakeDetector)
         # or optionally "vit_state_dict" (bare ViT, no prefix) if you used
@@ -147,6 +144,7 @@ class VideoFeatureExtractor(nn.Module):
         return self
 
 
+
 class FusedModel(nn.Module):
     """
     Final Fused Model with static spatio-temporal edges.
@@ -165,12 +163,21 @@ class FusedModel(nn.Module):
         num_transformer_blocks: int = 1,
         num_heads: int = 8,
         mlp_dim: int = 512,
+        tau_s: float = 0.6,
+        tau_t: float = 0.6,
+        graph_eps: float = 1e-4,
+        local_window: int = 3,
+        spectral_hidden_dim: int = 64,
         vit_weight_path=None,
     ):
         super().__init__()
         self.num_of_frames = num_of_frames
         self.feature_dim = feature_dim
         self.num_clusters = num_clusters
+        self.tau_s = tau_s
+        self.tau_t = tau_t
+        self.graph_eps = graph_eps
+        self.local_window = local_window
 
         self.vit = VideoFeatureExtractor(vit_name=vit_name, weight_path=vit_weight_path)
 
@@ -188,14 +195,21 @@ class FusedModel(nn.Module):
         )
 
         # ====================== Graph Path ======================
-        # Precompute static spatio-temporal edges ONCE
-        src, dst = get_spatio_temporal_edges(T=num_of_frames, N=256, K=8)
-        self.register_buffer('edge_index', torch.stack([src, dst], dim=0))   # [2, total_edges]
-
-        self.gcn_layers = nn.ModuleList()
+        self.consistency_gnn_layers = nn.ModuleList()
+        self.inconsistency_gnn_layers = nn.ModuleList()
         head_dim = feature_dim // num_heads
         for _ in range(num_gcn_layers):
-            self.gcn_layers.append(
+            self.consistency_gnn_layers.append(
+                GATv2Conv(
+                    in_channels=feature_dim,
+                    out_channels=head_dim,
+                    heads=num_heads,
+                    concat=True,
+                    dropout=dropout,
+                    add_self_loops=True,
+                )
+            )
+            self.inconsistency_gnn_layers.append(
                 GATv2Conv(
                     in_channels=feature_dim,
                     out_channels=head_dim,
@@ -206,22 +220,26 @@ class FusedModel(nn.Module):
                 )
             )
 
-        self.assign_net = nn.Linear(feature_dim, num_clusters)
+        self.spatial_mlp = nn.Sequential(
+            nn.Linear(feature_dim * 2, feature_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(feature_dim, feature_dim),
+        )
 
-        # Graph-level CLS token (still kept)
-        self.class_token_graph = nn.Parameter(torch.zeros(1, 1, feature_dim))
+        self.spectral_filter_mlp = nn.Sequential(
+            nn.Linear(1, spectral_hidden_dim),
+            nn.GELU(),
+            nn.Linear(spectral_hidden_dim, 1),
+            nn.Sigmoid(),
+        )
 
-        self.transformer_blocks = nn.ModuleList([
-            nn.TransformerEncoderLayer(
-                d_model=feature_dim,
-                nhead=num_heads,
-                dim_feedforward=mlp_dim,
-                dropout=dropout,
-                activation='gelu',
-                batch_first=True,
-                norm_first=True
-            ) for _ in range(num_transformer_blocks)
-        ])
+        self.graph_projector = nn.Sequential(
+            nn.Linear(feature_dim * 2, feature_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(feature_dim, feature_dim),
+        )
 
         # ASIF-style fusion
         self.fusion_layer = nn.Sequential(
@@ -234,7 +252,149 @@ class FusedModel(nn.Module):
             nn.Linear(256, 2)
         )
 
-    def forward(self, x: torch.Tensor):
+    def _local_negative_edges(self, t: int, num_patches: int, grid_size: int, device: torch.device):
+        half = self.local_window // 2
+        src, dst = [], []
+        offset = t * num_patches
+        for idx in range(num_patches):
+            r = idx // grid_size
+            c = idx % grid_size
+            for rr in range(max(0, r - half), min(grid_size, r + half + 1)):
+                for cc in range(max(0, c - half), min(grid_size, c + half + 1)):
+                    nbr = rr * grid_size + cc
+                    if nbr == idx:
+                        continue
+                    src.append(offset + idx)
+                    dst.append(offset + nbr)
+                    src.append(offset + nbr)
+                    dst.append(offset + idx)
+
+        if not src:
+            return torch.empty((2, 0), dtype=torch.long, device=device)
+        return torch.tensor([src, dst], dtype=torch.long, device=device)
+
+    def _build_graphs_for_sample(self, patch_tokens: torch.Tensor):
+        # patch_tokens: [T, N, D]
+        T, N, _ = patch_tokens.shape
+        device = patch_tokens.device
+        grid_size = int(N ** 0.5)
+        if grid_size * grid_size != N:
+            raise ValueError(f"Patch count {N} must be a perfect square")
+
+        x_norm = patch_tokens / (patch_tokens.norm(dim=-1, keepdim=True) + self.graph_eps)
+
+        cons_src, cons_dst = [], []
+        incon_src, incon_dst = [], []
+        spatial_adjs = []
+
+        # Spatial consistency graph A^(t)
+        for t in range(T):
+            sim = torch.matmul(x_norm[t], x_norm[t].transpose(0, 1))
+            sim.fill_diagonal_(0.0)
+            spatial_adjs.append(sim)
+
+            edge_mask = sim >= self.tau_s
+            src, dst = torch.where(edge_mask)
+            if src.numel() > 0:
+                cons_src.append(src + t * N)
+                cons_dst.append(dst + t * N)
+
+            neg_edges = self._local_negative_edges(t=t, num_patches=N, grid_size=grid_size, device=device)
+            if neg_edges.numel() > 0:
+                incon_src.append(neg_edges[0])
+                incon_dst.append(neg_edges[1])
+
+        # Temporal consistency + inconsistency edges between adjacent frames
+        for t in range(T - 1):
+            idx = torch.arange(N, device=device)
+            offset_curr = t * N
+            offset_next = (t + 1) * N
+
+            a_curr = spatial_adjs[t]
+            a_next = spatial_adjs[t + 1]
+            struct_sim = F.cosine_similarity(a_curr, a_next, dim=-1)
+            feat_sim = F.cosine_similarity(x_norm[t], x_norm[t + 1], dim=-1)
+            score = 0.5 * (struct_sim + feat_sim)
+
+            keep = score >= self.tau_t
+            if keep.any():
+                keep_idx = idx[keep]
+                cons_src.append(keep_idx + offset_curr)
+                cons_dst.append(keep_idx + offset_next)
+                cons_src.append(keep_idx + offset_next)
+                cons_dst.append(keep_idx + offset_curr)
+
+            # Temporal inconsistency graph A_bar (paper-style negative links)
+            incon_src.append(idx + offset_curr)
+            incon_dst.append(idx + offset_next)
+            incon_src.append(idx + offset_next)
+            incon_dst.append(idx + offset_curr)
+
+        if cons_src:
+            edge_index_cons = torch.stack([torch.cat(cons_src), torch.cat(cons_dst)], dim=0)
+        else:
+            node_idx = torch.arange(T * N, device=device)
+            edge_index_cons = torch.stack([node_idx, node_idx], dim=0)
+
+        if incon_src:
+            edge_index_incon = torch.stack([torch.cat(incon_src), torch.cat(incon_dst)], dim=0)
+        else:
+            node_idx = torch.arange(T * N, device=device)
+            edge_index_incon = torch.stack([node_idx, node_idx], dim=0)
+
+        return edge_index_cons, edge_index_incon
+
+    def _spectral_pool(self, x_nodes: torch.Tensor, edge_index_cons: torch.Tensor):
+        # x_nodes: [TN, D]
+        num_nodes = x_nodes.shape[0]
+        device = x_nodes.device
+
+        adj = torch.zeros((num_nodes, num_nodes), device=device, dtype=x_nodes.dtype)
+        adj[edge_index_cons[0], edge_index_cons[1]] = 1.0
+        adj = 0.5 * (adj + adj.transpose(0, 1))
+
+        deg = adj.sum(dim=1)
+        inv_sqrt_deg = torch.pow(deg + self.graph_eps, -0.5)
+        lap = torch.eye(num_nodes, device=device, dtype=x_nodes.dtype) - (
+            inv_sqrt_deg.unsqueeze(1) * adj * inv_sqrt_deg.unsqueeze(0)
+        )
+
+        try:
+            evals, evecs = torch.linalg.eigh(lap)
+            phi = self.spectral_filter_mlp(evals.unsqueeze(-1)).squeeze(-1)
+            filtered = evecs @ (phi.unsqueeze(-1) * (evecs.transpose(0, 1) @ x_nodes))
+            return filtered.mean(dim=0)
+        except RuntimeError:
+            # Fallback for rare decomposition instability
+            return x_nodes.mean(dim=0)
+
+    def _encode_graph_sample(self, patch_tokens_flat: torch.Tensor):
+        T = self.num_of_frames
+        TN, _ = patch_tokens_flat.shape
+        N = TN // T
+        if N * T != TN:
+            raise ValueError("Patch token count is not divisible by num_of_frames")
+
+        patch_tokens = patch_tokens_flat.view(T, N, self.feature_dim)
+        edge_index_cons, edge_index_incon = self._build_graphs_for_sample(patch_tokens)
+
+        x_nodes = patch_tokens_flat
+        x_cons = x_nodes
+        x_incon = x_nodes
+
+        for layer_cons, layer_incon in zip(self.consistency_gnn_layers, self.inconsistency_gnn_layers):
+            x_cons = F.relu(layer_cons(x_cons, edge_index_cons))
+            x_incon = F.relu(layer_incon(x_incon, edge_index_incon))
+
+        z_spatial_nodes = self.spatial_mlp(torch.cat([x_cons, x_incon], dim=-1))
+        z_spatial = z_spatial_nodes.mean(dim=0)
+        z_spectral = self._spectral_pool(x_nodes, edge_index_cons)
+
+        z_graph = torch.cat([z_spatial, z_spectral], dim=-1)
+        graph_feat = self.graph_projector(z_graph)
+        return graph_feat
+
+    def _encode_branches(self, x: torch.Tensor):
         B = x.shape[0]
         feats = self.vit(x)
         cls_features = feats['cls']
@@ -246,40 +406,44 @@ class FusedModel(nn.Module):
         bilstm_feat = lstm_out.mean(dim=1)
 
         # ====================== Graph Path ======================
-        data_list = []
+        graph_feat = []
         for i in range(B):
-            data = Data(x=patch_features[i], edge_index=self.edge_index)
-            data_list.append(data)
+            graph_feat.append(self._encode_graph_sample(patch_features[i]))
+        graph_feat = torch.stack(graph_feat, dim=0)
 
-        batched = Batch.from_data_list(data_list)
-        x_g = batched.x
-        edge_index = batched.edge_index
-        batch_idx = batched.batch
+        # Keep interface identical to existing train/test code.
+        mincut_loss = torch.zeros((), device=x.device)
+        ortho_loss = torch.zeros((), device=x.device)
+        return bilstm_feat, graph_feat, mincut_loss, ortho_loss
 
-        for gcn in self.gcn_layers:
-            x_g = gcn(x_g, edge_index)
-            x_g = F.relu(x_g)
+    def _fuse(self, bilstm_feat: torch.Tensor, graph_feat: torch.Tensor):
+        combined = torch.cat([bilstm_feat, graph_feat], dim=1)
+        return self.fusion_layer(combined)
 
-        # Reshape back to [B, T*256, D]
-        x_g = torch.split(x_g, split_size_or_sections=patch_features.shape[1])
-        x_g = torch.stack(x_g, dim=0)
+    def forward(
+        self,
+        x: torch.Tensor,
+        branch_ablation: str | None = None,
+        return_branch_logits: bool = False,
+    ):
+        bilstm_feat, graph_feat, mincut_loss, ortho_loss = self._encode_branches(x)
 
-        # MinCut Pooling
-        s = self.assign_net(x_g)
-        adj = to_dense_adj(edge_index, batch=batch_idx)
-        x_pooled, _, mincut_loss, ortho_loss = dense_mincut_pool(x_g, adj, s)
-
-        # Graph-level CLS token (no positional embedding anymore)
-        cls_token = self.class_token_graph.expand(B, 1, -1)
-        x_g = torch.cat([cls_token, x_pooled], dim=1)
-
-        for block in self.transformer_blocks:
-            x_g = block(x_g)
-
-        graph_feat = x_g[:, 0]
+        if branch_ablation == 'cls':
+            bilstm_feat = torch.zeros_like(bilstm_feat)
+        elif branch_ablation == 'graph':
+            graph_feat = torch.zeros_like(graph_feat)
 
         # ====================== Fusion ======================
-        combined = torch.cat([bilstm_feat, graph_feat], dim=1)
-        logits = self.fusion_layer(combined)
+        logits = self._fuse(bilstm_feat, graph_feat)
+
+        if return_branch_logits:
+            cls_only_logits = self._fuse(bilstm_feat, torch.zeros_like(graph_feat))
+            graph_only_logits = self._fuse(torch.zeros_like(bilstm_feat), graph_feat)
+            return logits, mincut_loss, ortho_loss, {
+                'bilstm_feat': bilstm_feat,
+                'graph_feat': graph_feat,
+                'cls_only_logits': cls_only_logits,
+                'graph_only_logits': graph_only_logits,
+            }
 
         return logits, mincut_loss, ortho_loss
