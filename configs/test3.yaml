@@ -1,0 +1,25 @@
+model:
+  model_path: "/home/zahin/Desktop/My_Thesis_Repo/models/model11.py"
+  model_class: "FusedModel"
+  vit_name: "dinov2_vits14"
+  checkpoint_path: "/home/zahin/Desktop/My_Thesis_Repo/checkpoints/model11/best_model.pth"
+  vit_weight: "/home/zahin/Desktop/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"
+  train_config_path: "/home/zahin/Desktop/My_Thesis_Repo/configs/train3.yaml"
+
+data:
+  json_root: "/home/zahin/Desktop/My_Thesis_Repo/rearrange/dataset_json"
+  dataset_names:
+    - "UADFV"
+    - "Celeb-DF-v1"
+    - "Celeb-DF-v2"
+    - "DFDC"
+
+paths:
+  log_dir: "/home/zahin/Desktop/My_Thesis_Repo/test_logs"
+
+training:
+  batch_size: 6
+  num_frames: 8
+  device: "cuda"
+
+seed: 42
