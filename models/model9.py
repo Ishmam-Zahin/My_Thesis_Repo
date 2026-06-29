@@ -84,9 +84,9 @@ class VideoFeatureExtractor(nn.Module):
         ckpt = torch.load(weight_path, map_location='cpu', weights_only=False)
 
         if 'best_auc' in ckpt:
-            print(f'best auc of vit is: {ckpt['best_auc']}')
+            print(f"best auc of vit is: {ckpt['best_auc']}")
         if 'epoch' in ckpt:
-            print(f'best auc epoch is: {ckpt['epoch']}')
+            print(f"best auc epoch is: {ckpt['epoch']}")
 
         # fine_tune.py saves under "model_state_dict" (full DeepfakeDetector)
         # or optionally "vit_state_dict" (bare ViT, no prefix) if you used
@@ -145,6 +145,7 @@ class VideoFeatureExtractor(nn.Module):
         super().train(mode)
         self.vit.eval()   # always keep ViT in eval regardless
         return self
+
 
 
 class FusedModel(nn.Module):
@@ -234,7 +235,7 @@ class FusedModel(nn.Module):
             nn.Linear(256, 2)
         )
 
-    def forward(self, x: torch.Tensor):
+    def _encode_branches(self, x: torch.Tensor):
         B = x.shape[0]
         feats = self.vit(x)
         cls_features = feats['cls']
@@ -277,9 +278,36 @@ class FusedModel(nn.Module):
             x_g = block(x_g)
 
         graph_feat = x_g[:, 0]
+        return bilstm_feat, graph_feat, mincut_loss, ortho_loss
+
+    def _fuse(self, bilstm_feat: torch.Tensor, graph_feat: torch.Tensor):
+        combined = torch.cat([bilstm_feat, graph_feat], dim=1)
+        return self.fusion_layer(combined)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        branch_ablation: str | None = None,
+        return_branch_logits: bool = False,
+    ):
+        bilstm_feat, graph_feat, mincut_loss, ortho_loss = self._encode_branches(x)
+
+        if branch_ablation == 'cls':
+            bilstm_feat = torch.zeros_like(bilstm_feat)
+        elif branch_ablation == 'graph':
+            graph_feat = torch.zeros_like(graph_feat)
 
         # ====================== Fusion ======================
-        combined = torch.cat([bilstm_feat, graph_feat], dim=1)
-        logits = self.fusion_layer(combined)
+        logits = self._fuse(bilstm_feat, graph_feat)
+
+        if return_branch_logits:
+            cls_only_logits = self._fuse(bilstm_feat, torch.zeros_like(graph_feat))
+            graph_only_logits = self._fuse(torch.zeros_like(bilstm_feat), graph_feat)
+            return logits, mincut_loss, ortho_loss, {
+                'bilstm_feat': bilstm_feat,
+                'graph_feat': graph_feat,
+                'cls_only_logits': cls_only_logits,
+                'graph_only_logits': graph_only_logits,
+            }
 
         return logits, mincut_loss, ortho_loss

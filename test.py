@@ -65,6 +65,13 @@ def get_transforms():
 def main():
     parser = argparse.ArgumentParser(description="Deepfake Detection Testing - Config Driven")
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument(
+        "--branch-ablation",
+        type=str,
+        choices=["none", "cls", "graph"],
+        default="none",
+        help="Run the model with one branch zeroed out to test contribution",
+    )
     args = parser.parse_args()
 
     # Load test config
@@ -134,6 +141,8 @@ def main():
         vit_weight_path=model_config.get('vit_weight')
     ).to(device)
 
+    branch_ablation = None if args.branch_ablation == "none" else args.branch_ablation
+
     # ==================== Load Checkpoint ====================
     checkpoint_path = model_config.get('checkpoint_path')
     if checkpoint_path:
@@ -182,7 +191,10 @@ def main():
                 videos = videos.to(device)
                 labels = labels.to(device)
 
-                logits, mincut_loss, ortho_loss = model(videos)
+                try:
+                    logits, mincut_loss, ortho_loss = model(videos, branch_ablation=branch_ablation)
+                except TypeError:
+                    logits, mincut_loss, ortho_loss = model(videos)
 
                 loss = nn.CrossEntropyLoss()(logits, labels) + \
                        (lamda_min * mincut_loss) + (lamda_ortho * ortho_loss)
@@ -220,7 +232,8 @@ def main():
             "precision": float(test_precision),
             "recall": float(test_recall),
             "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
-            "num_samples": len(test_dataset)
+            "num_samples": len(test_dataset),
+            "branch_ablation": branch_ablation or "none",
         }
 
     results_path = run_dir / "test_results.json"
