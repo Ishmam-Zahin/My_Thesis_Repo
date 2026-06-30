@@ -24,7 +24,7 @@ class FocalLoss(nn.Module):
     def __init__(self, gamma=2.0, alpha=None):
         super().__init__()
         self.gamma = gamma
-        self.alpha = alpha  # optional class weights
+        self.alpha = alpha
 
     def forward(self, logits, targets):
         ce_loss = F.cross_entropy(logits, targets, reduction='none')
@@ -122,7 +122,8 @@ def main():
         batch_size=config['training']['batch_size'],
         shuffle=True,
         num_workers=4,
-        pin_memory=torch.cuda.is_available()
+        pin_memory=torch.cuda.is_available(),
+        drop_last=True
     )
 
     val_loader = None
@@ -136,15 +137,21 @@ def main():
         )
 
     # ====================== LOSS SETUP ======================
-    focal_gamma = config['training'].get('focal_gamma', 2.0)
-    mincut_weight = config['training'].get('mincut_weight', 0.05)
-    ortho_weight = config['training'].get('ortho_weight', 0.05)
+    focal_gamma   = config['training'].get('focal_gamma', 2.0)
+    mincut_weight = config['training'].get('mincut_weight', 0.1)
+    ortho_weight  = config['training'].get('ortho_weight', 0.01)
+    entropy_weight = config['training'].get('entropy_weight', 0.05)  # NEW: Entropy regularization
 
     criterion = FocalLoss(gamma=focal_gamma).to(device)
-    logging.info(f"✅ Using Focal Loss (gamma={focal_gamma}) + "
-                 f"MinCut weight={mincut_weight} + Ortho weight={ortho_weight}")
+    logging.info(
+        f"✅ Loss Configuration:\n"
+        f"  - Focal Loss (gamma={focal_gamma})\n"
+        f"  - MinCut weight: {mincut_weight}\n"
+        f"  - Ortho weight: {ortho_weight}\n"
+        f"  - Entropy weight: {entropy_weight}  [encourages balanced branch contributions]"
+    )
 
-    # Model
+    # ====================== MODEL ======================
     ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
     model = ModelClass(
         vit_name=model_config['vit_name'],
@@ -160,75 +167,118 @@ def main():
         tau_t=model_config.get('tau_t', 0.6),
         graph_eps=model_config.get('graph_eps', 1e-4),
         local_window=model_config.get('local_window', 3),
-        spectral_hidden_dim=model_config.get('spectral_hidden_dim', 64),
-        vit_weight_path=model_config.get('vit_weight')
+        vit_weight_path=model_config.get('vit_weight'),
+        fusion_temperature=model_config.get('fusion_temperature', 1.0),  # NEW: Temperature parameter
     ).to(device)
 
     if torch.cuda.is_available():
-        summary(model, input_data=(torch.randn(1, config['training']['num_frames'], 3, 224, 224).to(device)), device="cuda")
+        summary(
+            model,
+            input_data=torch.randn(1, config['training']['num_frames'], 3, 224, 224).to(device),
+            device="cuda",
+        )
 
-    # Optimizer — single LR since ViT is fully frozen (loaded from fine-tuned weights)
+    # ====================== OPTIMIZER ======================
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     logging.info(f"Trainable parameters: {sum(p.numel() for p in trainable_params):,}")
 
     optimizer = optim.AdamW(
         trainable_params,
         lr=config['training']['lr'],
-        weight_decay=config['training'].get('weight_decay', 1e-4)
+        weight_decay=config['training'].get('weight_decay', 1e-4),
     )
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=2
     )
 
-    # Checkpointing
+    # ====================== CHECKPOINTING ======================
     checkpoint_base = Path(config['paths']['checkpoint_dir']) / model_name
     checkpoint_base.mkdir(parents=True, exist_ok=True)
     best_model_path = checkpoint_base / "best_model.pth"
-    last_ckpt_path = checkpoint_base / "last_checkpoint.pth"
+    last_ckpt_path  = checkpoint_base / "last_checkpoint.pth"
 
-    start_epoch = 0
-    best_val_auc = 0.0
+    start_epoch    = 0
+    best_val_auc   = 0.0
     epochs_no_improve = 0
 
     if config.get('resume', False) and last_ckpt_path.exists():
         ckpt = torch.load(last_ckpt_path, map_location=device)
         model.load_state_dict(ckpt['model_state_dict'])
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        start_epoch = ckpt['epoch'] + 1
+        start_epoch  = ckpt['epoch'] + 1
         best_val_auc = ckpt.get('best_val_auc', 0.0)
         logging.info(f"Resumed from epoch {start_epoch}")
 
     logging.info("=== Starting Training ===")
 
+    # ====================== TRAINING LOOP ======================
     for epoch in range(start_epoch, config['training']['epochs']):
+
+        # ── Train ──────────────────────────────────────────────────────────────
         model.train()
         train_loss = 0.0
         train_preds, train_labels = [], []
+        
+        # Track loss components for monitoring
+        epoch_focal_loss = 0.0
+        epoch_mincut_loss = 0.0
+        epoch_ortho_loss = 0.0
+        epoch_entropy_loss = 0.0
 
         for videos, labels in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]"):
             videos = videos.to(device)
             labels = labels.to(device)
             optimizer.zero_grad()
 
-            logits, mincut_loss, ortho_loss = model(videos)
+            # ── FIXED: Model now returns 4 values (added entropy) ────────────
+            logits, mincut_loss, ortho_loss, entropy = model(videos)
 
-            main_loss = criterion(logits, labels)
-            total_loss = main_loss + mincut_weight * mincut_loss + ortho_weight * ortho_loss
+            # ── Compute total loss with entropy regularization ───────────────
+            focal_loss = criterion(logits, labels)
+            
+            # Entropy regularization: encourage balanced contributions
+            # High entropy (~0.69) = balanced, so we penalize LOW entropy
+            # Target entropy for binary distribution: log(2) ≈ 0.693
+            target_entropy = 0.693
+            entropy_reg = (target_entropy - entropy).abs()  # Penalize deviation from balance
+            
+            total_loss = (
+                focal_loss + 
+                mincut_weight * mincut_loss + 
+                ortho_weight * ortho_loss +
+                entropy_weight * entropy_reg
+            )
 
             total_loss.backward()
+            
+            # Optional: Gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
 
+            # Track losses
             train_loss += total_loss.item()
+            epoch_focal_loss += focal_loss.item()
+            epoch_mincut_loss += mincut_loss.item()
+            epoch_ortho_loss += ortho_loss.item()
+            epoch_entropy_loss += entropy_reg.item()
+            
             probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
             train_preds.extend(probs)
             train_labels.extend(labels.cpu().numpy())
 
+        # Average losses
         train_loss /= len(train_loader)
+        epoch_focal_loss /= len(train_loader)
+        epoch_mincut_loss /= len(train_loader)
+        epoch_ortho_loss /= len(train_loader)
+        epoch_entropy_loss /= len(train_loader)
+        
         train_auc = roc_auc_score(train_labels, train_preds)
         train_acc = accuracy_score(train_labels, (np.array(train_preds) > 0.5).astype(int))
 
-        # ====================== VALIDATION ======================
+        # ── Validation ─────────────────────────────────────────────────────────
         if val_loader is not None:
             model.eval()
             val_loss = 0.0
@@ -238,8 +288,19 @@ def main():
                 for videos, labels in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]"):
                     videos = videos.to(device)
                     labels = labels.to(device)
-                    logits, _, _ = model(videos)          # ignore auxiliary losses in validation
-                    loss = criterion(logits, labels)
+                    
+                    # ── FIXED: Capture all 4 return values ───────────────────
+                    logits, mincut_loss, ortho_loss, entropy = model(videos)
+                    
+                    focal_loss = criterion(logits, labels)
+                    entropy_reg = (target_entropy - entropy).abs()
+                    
+                    loss = (
+                        focal_loss + 
+                        mincut_weight * mincut_loss + 
+                        ortho_weight * ortho_loss +
+                        entropy_weight * entropy_reg
+                    )
                     val_loss += loss.item()
 
                     probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
@@ -247,61 +308,77 @@ def main():
                     val_labels.extend(labels.cpu().numpy())
 
             val_loss /= len(val_loader)
-            val_auc = roc_auc_score(val_labels, val_preds)
-            val_acc = accuracy_score(val_labels, (np.array(val_preds) > 0.5).astype(int))
+            val_auc   = roc_auc_score(val_labels, val_preds)
+            val_acc   = accuracy_score(val_labels, (np.array(val_preds) > 0.5).astype(int))
 
             val_labels_np = np.array(val_labels)
-            val_preds_np = (np.array(val_preds) > 0.5).astype(int)
+            val_preds_np  = (np.array(val_preds) > 0.5).astype(int)
             cm = confusion_matrix(val_labels_np, val_preds_np)
             tn, fp, fn, tp = cm.ravel()
             precision = precision_score(val_labels_np, val_preds_np, zero_division=0)
-            recall = recall_score(val_labels_np, val_preds_np, zero_division=0)
+            recall    = recall_score(val_labels_np, val_preds_np, zero_division=0)
 
+            # ── Enhanced logging with loss breakdown ─────────────────────────
             logging.info(
-                f"Epoch {epoch+1:3d} | "
-                f"Train Loss: {train_loss:.4f} | Train AUC: {train_auc:.4f} | Train Acc: {train_acc:.4f} | "
-                f"Val Loss: {val_loss:.4f} | Val AUC: {val_auc:.4f} | Val Acc: {val_acc:.4f}"
-            )
-            logging.info(
-                f"Val Metrics → Precision: {precision:.4f} | Recall: {recall:.4f}"
-            )
-            logging.info(
-                f"Confusion Matrix (Real=0, Fake=1):\n"
-                f"  TN: {tn} | FP: {fp}\n"
-                f"  FN: {fn} | TP: {tp}"
+                f"\n{'='*80}\n"
+                f"Epoch {epoch+1:3d}/{config['training']['epochs']}\n"
+                f"{'='*80}\n"
+                f"Training:\n"
+                f"  Total Loss: {train_loss:.4f} | AUC: {train_auc:.4f} | Acc: {train_acc:.4f}\n"
+                f"  Loss Breakdown:\n"
+                f"    - Focal:   {epoch_focal_loss:.4f}\n"
+                f"    - MinCut:  {epoch_mincut_loss:.4f}\n"
+                f"    - Ortho:   {epoch_ortho_loss:.4f}\n"
+                f"    - Entropy: {epoch_entropy_loss:.4f}\n"
+                f"\n"
+                f"Validation:\n"
+                f"  Total Loss: {val_loss:.4f} | AUC: {val_auc:.4f} | Acc: {val_acc:.4f}\n"
+                f"  Metrics: Precision={precision:.4f} | Recall={recall:.4f}\n"
+                f"  Confusion Matrix (Real=0, Fake=1):\n"
+                f"    TN={tn:4d} | FP={fp:4d}\n"
+                f"    FN={fn:4d} | TP={tp:4d}\n"
+                f"{'='*80}"
             )
         else:
             val_loss = train_loss
-            val_auc = train_auc
-            val_acc = train_acc
+            val_auc  = train_auc
+            val_acc  = train_acc
+            
+            logging.info(
+                f"Epoch {epoch+1:3d} | Train Loss: {train_loss:.4f} | "
+                f"Train AUC: {train_auc:.4f} | Train Acc: {train_acc:.4f}"
+            )
 
         scheduler.step(val_auc)
 
-        # Save checkpoints
+        # ── Save checkpoints ───────────────────────────────────────────────────
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'best_val_auc': best_val_auc,
+            'train_auc': train_auc,
+            'val_auc': val_auc,
         }, last_ckpt_path)
 
         if val_auc > best_val_auc + config['early_stopping']['delta']:
-            best_val_auc = val_auc
+            best_val_auc      = val_auc
             epochs_no_improve = 0
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'val_auc': val_auc,
+                'val_acc': val_acc,
             }, best_model_path)
             logging.info(f"✅ New best model saved! Val AUC = {val_auc:.4f}")
         else:
             epochs_no_improve += 1
 
         if epochs_no_improve >= config['early_stopping']['patience']:
-            logging.info("Early stopping triggered!")
+            logging.info("⏹️  Early stopping triggered!")
             break
 
-    logging.info(f"=== Training Finished === Best Val AUC: {best_val_auc:.4f}")
+    logging.info(f"\n{'='*80}\n=== Training Finished ===\nBest Val AUC: {best_val_auc:.4f}\n{'='*80}")
 
 
 if __name__ == "__main__":

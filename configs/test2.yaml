@@ -1,10 +1,11 @@
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model10.py"
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model13.py"
   model_class: "FusedModel"
   vit_name: "dinov2_vits14"
-  checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/model10/best_model.pth"
-  vit_weight: /home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth
-  train_config_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/configs/train2.yaml" # ← this is where all fused-model params live
+  checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/model13/best_model.pth"
+  vit_weight: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"
+  train_config_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/configs/train2.yaml"
+  fusion_temperature: 1.0
 
 data:
   json_root: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/rearrange/dataset_json"
