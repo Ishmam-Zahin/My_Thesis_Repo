@@ -1,11 +1,11 @@
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model13.py"
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/final.py"
   model_class: "FusedModel"
   vit_name: "dinov2_vits14"
-  checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/model13/best_model.pth"
+  checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/final/best_model.pth"
   vit_weight: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"
   train_config_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/configs/train2.yaml"
-  fusion_temperature: 1.0
+  # fusion_temperature removed — not a FusedModel constructor argument.
 
 data:
   json_root: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/rearrange/dataset_json"
@@ -19,7 +19,7 @@ paths:
   log_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/test_logs"
 
 training:
-  batch_size: 6
+  batch_size: 8
   num_frames: 8
   device: "cuda"
 

@@ -92,6 +92,9 @@ def main():
     run_dir = setup_run_logging(str(log_base), run_name)
 
     # ====================== MODEL ======================
+    # NOTE: FusedModel's constructor only accepts the kwargs below. (tau_s,
+    # tau_t, graph_eps, local_window, fusion_temperature are NOT parameters
+    # of this model — they were dropped to match the actual model13.py.)
     ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
 
     model = ModelClass(
@@ -104,12 +107,7 @@ def main():
         num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
         num_heads=model_config.get('num_heads', 8),
         mlp_dim=model_config.get('mlp_dim', 512),
-        tau_s=model_config.get('tau_s', 0.6),
-        tau_t=model_config.get('tau_t', 0.6),
-        graph_eps=model_config.get('graph_eps', 1e-4),
-        local_window=model_config.get('local_window', 3),
         vit_weight_path=model_config.get('vit_weight'),
-        fusion_temperature=model_config.get('fusion_temperature', 1.0),
     ).to(device)
 
     branch_ablation = None if args.branch_ablation == "none" else args.branch_ablation
@@ -146,9 +144,8 @@ def main():
             continue
 
         # NOTE: drop_last=False here on purpose — we want to evaluate on every
-        # sample at test time. BatchNorm1d in AdaptiveFusion is safe with
-        # batch size 1 in eval() mode since it uses running stats, not batch
-        # stats, so this will not trigger the training-time crash.
+        # sample at test time. BatchNorm-free model is safe with batch size 1
+        # in eval() mode regardless.
         test_loader = DataLoader(
             test_dataset,
             batch_size=batch_size,
@@ -162,19 +159,13 @@ def main():
         test_loss = 0.0
         test_preds, test_labels = [], []
 
-        # Track average branch contributions / entropy across the test set
-        bilstm_contribs, graph_contribs, entropies = [], [], []
-
         with torch.no_grad():
             for videos, labels in tqdm(test_loader, desc=f"Testing {dataset_name}"):
                 videos = videos.to(device)
                 labels = labels.to(device)
 
-                # FusedModel.forward now returns:
-                #   logits, mincut_loss, ortho_loss, entropy
-                # (entropy is a scalar tensor unless return_branch_logits=True,
-                #  in which case the 4th element is a details dict instead)
-                logits, mincut_loss, ortho_loss, entropy = model(
+                # FusedModel.forward returns 3 values: logits, mincut_loss, ortho_loss
+                logits, mincut_loss, ortho_loss = model(
                     videos, branch_ablation=branch_ablation
                 )
 
@@ -185,13 +176,6 @@ def main():
                 test_preds.extend(probs)
                 test_labels.extend(labels.cpu().numpy())
 
-                entropies.append(entropy.item())
-                # Pull last-logged contribution stats from model history if present
-                if model.contribution_history:
-                    last = model.contribution_history[-1]
-                    bilstm_contribs.append(last['bilstm_contribution'])
-                    graph_contribs.append(last['graph_contribution'])
-
         test_loss /= len(test_loader)
         test_auc       = roc_auc_score(test_labels, test_preds)
         binary_preds   = (np.array(test_preds) > 0.5).astype(int)
@@ -201,10 +185,6 @@ def main():
 
         cm = confusion_matrix(test_labels, binary_preds)
         tn, fp, fn, tp = cm.ravel()
-
-        avg_bilstm_contrib = float(np.mean(bilstm_contribs)) if bilstm_contribs else None
-        avg_graph_contrib  = float(np.mean(graph_contribs))  if graph_contribs  else None
-        avg_entropy        = float(np.mean(entropies))       if entropies       else None
 
         logging.info(
             f"✅ {dataset_name} | "
@@ -221,12 +201,6 @@ def main():
             f"  FN (Fake wrongly predicted Real)  : {fn}\n"
             f"  TP (Correctly predicted Fake)     : {tp}"
         )
-        if avg_bilstm_contrib is not None:
-            logging.info(
-                f"Branch contributions (avg over test set): "
-                f"BiLSTM={avg_bilstm_contrib:.3f} | Graph={avg_graph_contrib:.3f} | "
-                f"Entropy={avg_entropy:.3f}"
-            )
 
         results[dataset_name] = {
             "test_loss":        float(test_loss),
@@ -236,9 +210,6 @@ def main():
             "recall":           float(test_recall),
             "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
             "branch_ablation":  branch_ablation or "none",
-            "avg_bilstm_contribution": avg_bilstm_contrib,
-            "avg_graph_contribution":  avg_graph_contrib,
-            "avg_entropy":             avg_entropy,
         }
 
     results_path = run_dir / "test_results.json"

@@ -140,18 +140,19 @@ def main():
     focal_gamma   = config['training'].get('focal_gamma', 2.0)
     mincut_weight = config['training'].get('mincut_weight', 0.1)
     ortho_weight  = config['training'].get('ortho_weight', 0.01)
-    entropy_weight = config['training'].get('entropy_weight', 0.05)  # NEW: Entropy regularization
 
     criterion = FocalLoss(gamma=focal_gamma).to(device)
     logging.info(
         f"✅ Loss Configuration:\n"
         f"  - Focal Loss (gamma={focal_gamma})\n"
         f"  - MinCut weight: {mincut_weight}\n"
-        f"  - Ortho weight: {ortho_weight}\n"
-        f"  - Entropy weight: {entropy_weight}  [encourages balanced branch contributions]"
+        f"  - Ortho weight: {ortho_weight}"
     )
 
     # ====================== MODEL ======================
+    # NOTE: FusedModel's constructor only accepts the kwargs below. (tau_s,
+    # tau_t, graph_eps, local_window, fusion_temperature are NOT parameters
+    # of this model — they were dropped to match the actual model13.py.)
     ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
     model = ModelClass(
         vit_name=model_config['vit_name'],
@@ -163,12 +164,7 @@ def main():
         num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
         num_heads=model_config.get('num_heads', 8),
         mlp_dim=model_config.get('mlp_dim', 512),
-        tau_s=model_config.get('tau_s', 0.6),
-        tau_t=model_config.get('tau_t', 0.6),
-        graph_eps=model_config.get('graph_eps', 1e-4),
-        local_window=model_config.get('local_window', 3),
         vit_weight_path=model_config.get('vit_weight'),
-        fusion_temperature=model_config.get('fusion_temperature', 1.0),  # NEW: Temperature parameter
     ).to(device)
 
     if torch.cuda.is_available():
@@ -219,42 +215,33 @@ def main():
         model.train()
         train_loss = 0.0
         train_preds, train_labels = [], []
-        
+
         # Track loss components for monitoring
         epoch_focal_loss = 0.0
         epoch_mincut_loss = 0.0
         epoch_ortho_loss = 0.0
-        epoch_entropy_loss = 0.0
 
         for videos, labels in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]"):
             videos = videos.to(device)
             labels = labels.to(device)
             optimizer.zero_grad()
 
-            # ── FIXED: Model now returns 4 values (added entropy) ────────────
-            logits, mincut_loss, ortho_loss, entropy = model(videos)
+            # FusedModel.forward returns 3 values: logits, mincut_loss, ortho_loss
+            logits, mincut_loss, ortho_loss = model(videos)
 
-            # ── Compute total loss with entropy regularization ───────────────
             focal_loss = criterion(logits, labels)
-            
-            # Entropy regularization: encourage balanced contributions
-            # High entropy (~0.69) = balanced, so we penalize LOW entropy
-            # Target entropy for binary distribution: log(2) ≈ 0.693
-            target_entropy = 0.693
-            entropy_reg = (target_entropy - entropy).abs()  # Penalize deviation from balance
-            
+
             total_loss = (
-                focal_loss + 
-                mincut_weight * mincut_loss + 
-                ortho_weight * ortho_loss +
-                entropy_weight * entropy_reg
+                focal_loss +
+                mincut_weight * mincut_loss +
+                ortho_weight * ortho_loss
             )
 
             total_loss.backward()
-            
-            # Optional: Gradient clipping for stability
+
+            # Gradient clipping for stability
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
+
             optimizer.step()
 
             # Track losses
@@ -262,8 +249,7 @@ def main():
             epoch_focal_loss += focal_loss.item()
             epoch_mincut_loss += mincut_loss.item()
             epoch_ortho_loss += ortho_loss.item()
-            epoch_entropy_loss += entropy_reg.item()
-            
+
             probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
             train_preds.extend(probs)
             train_labels.extend(labels.cpu().numpy())
@@ -273,8 +259,7 @@ def main():
         epoch_focal_loss /= len(train_loader)
         epoch_mincut_loss /= len(train_loader)
         epoch_ortho_loss /= len(train_loader)
-        epoch_entropy_loss /= len(train_loader)
-        
+
         train_auc = roc_auc_score(train_labels, train_preds)
         train_acc = accuracy_score(train_labels, (np.array(train_preds) > 0.5).astype(int))
 
@@ -288,18 +273,15 @@ def main():
                 for videos, labels in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]"):
                     videos = videos.to(device)
                     labels = labels.to(device)
-                    
-                    # ── FIXED: Capture all 4 return values ───────────────────
-                    logits, mincut_loss, ortho_loss, entropy = model(videos)
-                    
+
+                    logits, mincut_loss, ortho_loss = model(videos)
+
                     focal_loss = criterion(logits, labels)
-                    entropy_reg = (target_entropy - entropy).abs()
-                    
+
                     loss = (
-                        focal_loss + 
-                        mincut_weight * mincut_loss + 
-                        ortho_weight * ortho_loss +
-                        entropy_weight * entropy_reg
+                        focal_loss +
+                        mincut_weight * mincut_loss +
+                        ortho_weight * ortho_loss
                     )
                     val_loss += loss.item()
 
@@ -318,7 +300,6 @@ def main():
             precision = precision_score(val_labels_np, val_preds_np, zero_division=0)
             recall    = recall_score(val_labels_np, val_preds_np, zero_division=0)
 
-            # ── Enhanced logging with loss breakdown ─────────────────────────
             logging.info(
                 f"\n{'='*80}\n"
                 f"Epoch {epoch+1:3d}/{config['training']['epochs']}\n"
@@ -329,7 +310,6 @@ def main():
                 f"    - Focal:   {epoch_focal_loss:.4f}\n"
                 f"    - MinCut:  {epoch_mincut_loss:.4f}\n"
                 f"    - Ortho:   {epoch_ortho_loss:.4f}\n"
-                f"    - Entropy: {epoch_entropy_loss:.4f}\n"
                 f"\n"
                 f"Validation:\n"
                 f"  Total Loss: {val_loss:.4f} | AUC: {val_auc:.4f} | Acc: {val_acc:.4f}\n"
@@ -343,7 +323,7 @@ def main():
             val_loss = train_loss
             val_auc  = train_auc
             val_acc  = train_acc
-            
+
             logging.info(
                 f"Epoch {epoch+1:3d} | Train Loss: {train_loss:.4f} | "
                 f"Train AUC: {train_auc:.4f} | Train Acc: {train_acc:.4f}"

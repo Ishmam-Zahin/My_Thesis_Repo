@@ -3,39 +3,31 @@ data:
   dataset_name: "FaceForensics++"
 
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model13.py"
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/final.py"
   model_class: "FusedModel"
   vit_name: "dinov2_vits14"
   vit_weight: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"
-  
+
   # Graph hyperparameters
-  num_gcn_layers: 2
+  num_gcn_layers: 3
   num_clusters: 512
   num_transformer_blocks: 2
   num_heads: 8
   mlp_dim: 512
   dropout: 0.4
-  tau_s: 0.7
-  tau_t: 0.7
-  graph_eps: 0.0001
-  local_window: 3
-  
-  # NEW: Fusion hyperparameters
-  fusion_temperature: 1.0  # Temperature for contribution softmax (1.0 = standard, >1 = smoother, <1 = sharper)
 
 training:
   epochs: 50
-  batch_size: 8  # CHANGED from 6 to 8 for more stable contribution learning
-  lr: 0.0001
+  batch_size: 8
+  lr: 0.00005
   optimizer: "AdamW"
-  weight_decay: 0.0001
+  weight_decay: 0.00001
   num_frames: 8
-  
+
   # Loss weights
   focal_gamma: 2.0
-  mincut_weight: 0.1
-  ortho_weight: 0.01
-  entropy_weight: 0.05  # NEW: Encourages balanced BiLSTM/Graph contributions (prevent 50/50 lazy equilibrium)
+  mincut_weight: 0.5
+  ortho_weight: 0.05
 
 paths:
   checkpoint_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints"
