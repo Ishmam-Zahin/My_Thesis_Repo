@@ -3,8 +3,6 @@ from torch import nn
 import torch.nn.functional as F
 from torch_geometric.data import Data, Batch
 from torch_geometric.nn import GATv2Conv
-from torch_geometric.utils import to_dense_adj
-from torch_geometric.nn.dense import dense_mincut_pool
 
 
 def get_spatio_temporal_edges(T=8, N=256, K=8):
@@ -76,7 +74,6 @@ class VideoFeatureExtractor(nn.Module):
     def __init__(self, vit_name='dinov2_vits14', feature_dim=384, weight_path=None):
         super().__init__()
 
-        # Weight path is mandatory
         if weight_path is None:
             raise ValueError(
                 "weight_path must be provided. "
@@ -85,7 +82,6 @@ class VideoFeatureExtractor(nn.Module):
 
         self.vit = torch.hub.load('facebookresearch/dinov2', vit_name)
 
-        # ── Load weights from fine_tune.py checkpoint ──────────────────────
         ckpt = torch.load(weight_path, map_location='cpu', weights_only=False)
 
         if 'best_auc' in ckpt:
@@ -93,15 +89,10 @@ class VideoFeatureExtractor(nn.Module):
         if 'epoch' in ckpt:
             print(f"best auc epoch is: {ckpt['epoch']}")
 
-        # fine_tune.py saves under "model_state_dict" (full DeepfakeDetector)
-        # or optionally "vit_state_dict" (bare ViT, no prefix) if you used
-        # the improved save block. Handle both transparently.
         if "vit_state_dict" in ckpt:
-            # Already stripped of "vit." prefix — load directly
             vit_state_dict = ckpt["vit_state_dict"]
         else:
             state_dict = ckpt.get("model_state_dict", ckpt)
-            # Strip the "vit." prefix added by DeepfakeDetector
             vit_state_dict = {
                 k.replace("vit.", "", 1): v
                 for k, v in state_dict.items()
@@ -118,17 +109,13 @@ class VideoFeatureExtractor(nn.Module):
         best_auc = ckpt.get("best_auc", "?")
         print(f"[VideoFeatureExtractor] Loaded checkpoint — epoch={epoch}, best_auc={best_auc}")
 
-        # ── Freeze ALL parameters (feature extractor, no updates) ──────────
         for p in self.vit.parameters():
             p.requires_grad = False
 
-        # ── Eval mode — disables dropout / BN running stats updates ────────
         self.vit.eval()
-
         self.D = feature_dim
 
     def forward(self, x: torch.Tensor):
-        # Ensure eval mode is enforced even if someone calls model.train() upstream
         self.vit.eval()
 
         B, T, C, H, W = x.shape
@@ -146,32 +133,25 @@ class VideoFeatureExtractor(nn.Module):
         }
 
     def train(self, mode: bool = True):
-        # Prevent any external .train() call from affecting the frozen ViT
         super().train(mode)
-        self.vit.eval()   # always keep ViT in eval regardless
+        self.vit.eval()
         return self
 
 
 class FusedModel(nn.Module):
     """
-    Final Fused Model with static spatio-temporal edge STRUCTURE and
+    Fused Model with static spatio-temporal edge STRUCTURE and
     dynamic, feature-dependent edge ATTRIBUTES.
 
-    Changes vs the previous version:
-    - Every edge (spatial KNN *and* temporal exact-match) now carries a
-      scalar edge attribute equal to the cosine similarity between the two
-      connected patch embeddings. This is computed fresh every forward pass
-      (since it depends on the actual ViT features) and fed into GATv2Conv
-      via `edge_dim=1`, so attention can be informed by how similar two
-      patches actually are, not just whether they're topologically linked.
-    - Re-added a learnable positional embedding on the graph path, applied
-      to [graph-CLS + pooled cluster tokens] right before the transformer
-      encoder blocks.
-    - Graph-path activations switched from ReLU -> GELU (smoother, matches
-      the activation family already used by the DINOv2 backbone and the
-      transformer encoder blocks, and avoids hard-zeroing patches that have
-      mildly negative-but-informative similarity signal).
-    - Kept BiLSTM temporal_pos_embed (CLS path) unchanged.
+    Graph path: DINOv2 patch features → GATv2Conv layers (with cosine-
+    similarity edge attributes) → per-frame mean pool [B, T, D] → prepend
+    graph CLS token → transformer encoder blocks → graph_feat.
+
+    MinCut pooling has been removed entirely. The per-frame mean pool is a
+    lossless compression of the 256 spatial patches per frame, retaining all
+    temporal granularity and costing zero learnable parameters. The
+    transformer then attends across T frame-level summaries rather than K
+    learned clusters, so the model is both simpler and more interpretable.
     """
     def __init__(
         self,
@@ -180,7 +160,6 @@ class FusedModel(nn.Module):
         dropout: float = 0.2,
         num_of_frames: int = 8,
         num_gcn_layers: int = 2,
-        num_clusters: int = 512,
         num_transformer_blocks: int = 1,
         num_heads: int = 8,
         mlp_dim: int = 512,
@@ -189,7 +168,7 @@ class FusedModel(nn.Module):
         super().__init__()
         self.num_of_frames = num_of_frames
         self.feature_dim = feature_dim
-        self.num_clusters = num_clusters
+        self.N_patches = 256  # DINOv2-vits14 produces 16x16 = 256 patches for 224x224 input
 
         self.vit = VideoFeatureExtractor(vit_name=vit_name, weight_path=vit_weight_path)
 
@@ -208,8 +187,8 @@ class FusedModel(nn.Module):
 
         # ====================== Graph Path ======================
         # Precompute static spatio-temporal edge STRUCTURE once.
-        src, dst = get_spatio_temporal_edges(T=num_of_frames, N=256, K=8)
-        self.register_buffer('edge_index', torch.stack([src, dst], dim=0))   # [2, total_edges]
+        src, dst = get_spatio_temporal_edges(T=num_of_frames, N=self.N_patches, K=8)
+        self.register_buffer('edge_index', torch.stack([src, dst], dim=0))  # [2, E]
 
         self.gcn_layers = nn.ModuleList()
         head_dim = feature_dim // num_heads
@@ -226,13 +205,12 @@ class FusedModel(nn.Module):
                 )
             )
 
-        self.assign_net = nn.Linear(feature_dim, num_clusters)
-
         # Graph-level CLS token
         self.class_token_graph = nn.Parameter(torch.zeros(1, 1, feature_dim))
 
-        # Learnable positional embedding over [graph-CLS, cluster_1 .. cluster_K]
-        self.graph_pos_embed = nn.Parameter(torch.zeros(1, num_clusters + 1, feature_dim))
+        # Positional embedding over [graph-CLS, frame_1 ... frame_T].
+        # After per-frame mean pooling we have T frame tokens + 1 CLS token.
+        self.graph_pos_embed = nn.Parameter(torch.zeros(1, num_of_frames + 1, feature_dim))
         nn.init.trunc_normal_(self.graph_pos_embed, std=0.02)
 
         self.transformer_blocks = nn.ModuleList([
@@ -262,8 +240,7 @@ class FusedModel(nn.Module):
     def _cosine_edge_attr(x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """
         Compute cosine similarity between connected node features for every
-        edge in edge_index. Returns shape [E, 1] (GATv2Conv expects edge_dim
-        channels per edge).
+        edge in edge_index. Returns shape [E, 1].
         """
         src, dst = edge_index
         x_norm = F.normalize(x, p=2, dim=-1, eps=1e-8)
@@ -273,58 +250,49 @@ class FusedModel(nn.Module):
     def _encode_branches(self, x: torch.Tensor):
         B = x.shape[0]
         feats = self.vit(x)
-        cls_features = feats['cls']
-        patch_features = feats['patch']                     # [B, T*256, D]
+        cls_features = feats['cls']    # [B, T, D]
+        patch_features = feats['patch']  # [B, T*256, D]
 
         # ====================== BiLSTM Path ======================
         cls_features = cls_features + self.temporal_pos_embed
         lstm_out, _ = self.bilstm(cls_features)
-        bilstm_feat = lstm_out.mean(dim=1)
+        bilstm_feat = lstm_out.mean(dim=1)   # [B, D]
 
         # ====================== Graph Path ======================
+        # Build one PyG Data object per sample in the batch.
         data_list = []
         for i in range(B):
             data = Data(x=patch_features[i], edge_index=self.edge_index)
             data_list.append(data)
 
         batched = Batch.from_data_list(data_list)
-        x_g = batched.x
+        x_g = batched.x           # [B*T*256, D]
         edge_index = batched.edge_index
-        batch_idx = batched.batch
 
-        # Dynamic edge attributes: cosine similarity between connected patch
-        # features, recomputed every forward pass for every edge (spatial
-        # and temporal alike), using whatever the current node features are
-        # at that layer's input.
+        # Dynamic edge attributes recomputed after every GCN layer.
         edge_attr = self._cosine_edge_attr(x_g, edge_index)
 
         for gcn in self.gcn_layers:
             x_g = gcn(x_g, edge_index, edge_attr=edge_attr)
             x_g = F.gelu(x_g)
-            # Recompute edge attributes from the updated representations so
-            # deeper layers' attention is informed by the *current* layer's
-            # similarity structure rather than only the raw ViT features.
             edge_attr = self._cosine_edge_attr(x_g, edge_index)
 
-        # Reshape back to [B, T*256, D]
-        x_g = torch.split(x_g, split_size_or_sections=patch_features.shape[1])
-        x_g = torch.stack(x_g, dim=0)
+        # ── Per-frame mean pooling (replaces MinCut pooling) ──────────────
+        # Reshape [B*T*256, D] → [B, T, 256, D] → mean over N=256 patches
+        # → [B, T, D].  No learnable parameters, no adjacency materialisation.
+        x_g = x_g.view(B, self.num_of_frames, self.N_patches, self.feature_dim)
+        x_g = x_g.mean(dim=2)  # [B, T, D]
 
-        # MinCut Pooling
-        s = self.assign_net(x_g)
-        adj = to_dense_adj(edge_index, batch=batch_idx)
-        x_pooled, _, mincut_loss, ortho_loss = dense_mincut_pool(x_g, adj, s)
-
-        # Graph-level CLS token + learnable positional embedding
+        # Prepend graph CLS token → [B, T+1, D], add positional embedding.
         cls_token = self.class_token_graph.expand(B, 1, -1)
-        x_g = torch.cat([cls_token, x_pooled], dim=1)
+        x_g = torch.cat([cls_token, x_g], dim=1)   # [B, T+1, D]
         x_g = x_g + self.graph_pos_embed
 
         for block in self.transformer_blocks:
             x_g = block(x_g)
 
-        graph_feat = x_g[:, 0]
-        return bilstm_feat, graph_feat, mincut_loss, ortho_loss
+        graph_feat = x_g[:, 0]   # [B, D]  — graph CLS output
+        return bilstm_feat, graph_feat
 
     def _fuse(self, bilstm_feat: torch.Tensor, graph_feat: torch.Tensor):
         combined = torch.cat([bilstm_feat, graph_feat], dim=1)
@@ -336,24 +304,23 @@ class FusedModel(nn.Module):
         branch_ablation: str | None = None,
         return_branch_logits: bool = False,
     ):
-        bilstm_feat, graph_feat, mincut_loss, ortho_loss = self._encode_branches(x)
+        bilstm_feat, graph_feat = self._encode_branches(x)
 
         if branch_ablation == 'cls':
             bilstm_feat = torch.zeros_like(bilstm_feat)
         elif branch_ablation == 'graph':
             graph_feat = torch.zeros_like(graph_feat)
 
-        # ====================== Fusion ======================
         logits = self._fuse(bilstm_feat, graph_feat)
 
         if return_branch_logits:
-            cls_only_logits = self._fuse(bilstm_feat, torch.zeros_like(graph_feat))
+            cls_only_logits   = self._fuse(bilstm_feat, torch.zeros_like(graph_feat))
             graph_only_logits = self._fuse(torch.zeros_like(bilstm_feat), graph_feat)
-            return logits, mincut_loss, ortho_loss, {
+            return logits, {
                 'bilstm_feat': bilstm_feat,
                 'graph_feat': graph_feat,
                 'cls_only_logits': cls_only_logits,
                 'graph_only_logits': graph_only_logits,
             }
 
-        return logits, mincut_loss, ortho_loss
+        return logits

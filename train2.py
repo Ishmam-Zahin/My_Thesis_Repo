@@ -137,22 +137,11 @@ def main():
         )
 
     # ====================== LOSS SETUP ======================
-    focal_gamma   = config['training'].get('focal_gamma', 2.0)
-    mincut_weight = config['training'].get('mincut_weight', 0.1)
-    ortho_weight  = config['training'].get('ortho_weight', 0.01)
-
+    focal_gamma = config['training'].get('focal_gamma', 2.0)
     criterion = FocalLoss(gamma=focal_gamma).to(device)
-    logging.info(
-        f"✅ Loss Configuration:\n"
-        f"  - Focal Loss (gamma={focal_gamma})\n"
-        f"  - MinCut weight: {mincut_weight}\n"
-        f"  - Ortho weight: {ortho_weight}"
-    )
+    logging.info(f"✅ Loss Configuration: Focal Loss (gamma={focal_gamma})")
 
     # ====================== MODEL ======================
-    # NOTE: FusedModel's constructor only accepts the kwargs below. (tau_s,
-    # tau_t, graph_eps, local_window, fusion_temperature are NOT parameters
-    # of this model — they were dropped to match the actual model13.py.)
     ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
     model = ModelClass(
         vit_name=model_config['vit_name'],
@@ -160,7 +149,6 @@ def main():
         dropout=model_config.get('dropout', 0.2),
         num_of_frames=config['training']['num_frames'],
         num_gcn_layers=model_config.get('num_gcn_layers', 2),
-        num_clusters=model_config.get('num_clusters', 512),
         num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
         num_heads=model_config.get('num_heads', 8),
         mlp_dim=model_config.get('mlp_dim', 512),
@@ -194,8 +182,8 @@ def main():
     best_model_path = checkpoint_base / "best_model.pth"
     last_ckpt_path  = checkpoint_base / "last_checkpoint.pth"
 
-    start_epoch    = 0
-    best_val_auc   = 0.0
+    start_epoch       = 0
+    best_val_auc      = 0.0
     epochs_no_improve = 0
 
     if config.get('resume', False) and last_ckpt_path.exists():
@@ -216,50 +204,24 @@ def main():
         train_loss = 0.0
         train_preds, train_labels = [], []
 
-        # Track loss components for monitoring
-        epoch_focal_loss = 0.0
-        epoch_mincut_loss = 0.0
-        epoch_ortho_loss = 0.0
-
         for videos, labels in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]"):
             videos = videos.to(device)
             labels = labels.to(device)
             optimizer.zero_grad()
 
-            # FusedModel.forward returns 3 values: logits, mincut_loss, ortho_loss
-            logits, mincut_loss, ortho_loss = model(videos)
+            logits = model(videos)
+            loss = criterion(logits, labels)
+            loss.backward()
 
-            focal_loss = criterion(logits, labels)
-
-            total_loss = (
-                focal_loss +
-                mincut_weight * mincut_loss +
-                ortho_weight * ortho_loss
-            )
-
-            total_loss.backward()
-
-            # Gradient clipping for stability
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
             optimizer.step()
 
-            # Track losses
-            train_loss += total_loss.item()
-            epoch_focal_loss += focal_loss.item()
-            epoch_mincut_loss += mincut_loss.item()
-            epoch_ortho_loss += ortho_loss.item()
-
+            train_loss += loss.item()
             probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
             train_preds.extend(probs)
             train_labels.extend(labels.cpu().numpy())
 
-        # Average losses
         train_loss /= len(train_loader)
-        epoch_focal_loss /= len(train_loader)
-        epoch_mincut_loss /= len(train_loader)
-        epoch_ortho_loss /= len(train_loader)
-
         train_auc = roc_auc_score(train_labels, train_preds)
         train_acc = accuracy_score(train_labels, (np.array(train_preds) > 0.5).astype(int))
 
@@ -274,17 +236,10 @@ def main():
                     videos = videos.to(device)
                     labels = labels.to(device)
 
-                    logits, mincut_loss, ortho_loss = model(videos)
+                    logits = model(videos)
+                    loss = criterion(logits, labels)
 
-                    focal_loss = criterion(logits, labels)
-
-                    loss = (
-                        focal_loss +
-                        mincut_weight * mincut_loss +
-                        ortho_weight * ortho_loss
-                    )
                     val_loss += loss.item()
-
                     probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
                     val_preds.extend(probs)
                     val_labels.extend(labels.cpu().numpy())
@@ -305,14 +260,10 @@ def main():
                 f"Epoch {epoch+1:3d}/{config['training']['epochs']}\n"
                 f"{'='*80}\n"
                 f"Training:\n"
-                f"  Total Loss: {train_loss:.4f} | AUC: {train_auc:.4f} | Acc: {train_acc:.4f}\n"
-                f"  Loss Breakdown:\n"
-                f"    - Focal:   {epoch_focal_loss:.4f}\n"
-                f"    - MinCut:  {epoch_mincut_loss:.4f}\n"
-                f"    - Ortho:   {epoch_ortho_loss:.4f}\n"
+                f"  Focal Loss: {train_loss:.4f} | AUC: {train_auc:.4f} | Acc: {train_acc:.4f}\n"
                 f"\n"
                 f"Validation:\n"
-                f"  Total Loss: {val_loss:.4f} | AUC: {val_auc:.4f} | Acc: {val_acc:.4f}\n"
+                f"  Focal Loss: {val_loss:.4f} | AUC: {val_auc:.4f} | Acc: {val_acc:.4f}\n"
                 f"  Metrics: Precision={precision:.4f} | Recall={recall:.4f}\n"
                 f"  Confusion Matrix (Real=0, Fake=1):\n"
                 f"    TN={tn:4d} | FP={fp:4d}\n"
@@ -358,7 +309,9 @@ def main():
             logging.info("⏹️  Early stopping triggered!")
             break
 
-    logging.info(f"\n{'='*80}\n=== Training Finished ===\nBest Val AUC: {best_val_auc:.4f}\n{'='*80}")
+    logging.info(
+        f"\n{'='*80}\n=== Training Finished ===\nBest Val AUC: {best_val_auc:.4f}\n{'='*80}"
+    )
 
 
 if __name__ == "__main__":

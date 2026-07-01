@@ -7,11 +7,8 @@ model:
   model_class: "FusedModel"
   vit_name: "dinov2_vits14"
   vit_weight: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"
-
-  # Graph hyperparameters
   num_gcn_layers: 3
-  num_clusters: 512
-  num_transformer_blocks: 2
+  num_transformer_blocks: 3
   num_heads: 8
   mlp_dim: 512
   dropout: 0.4
@@ -19,15 +16,11 @@ model:
 training:
   epochs: 50
   batch_size: 8
-  lr: 0.00005
+  lr: 0.0001
   optimizer: "AdamW"
   weight_decay: 0.00001
   num_frames: 8
-
-  # Loss weights
-  focal_gamma: 2.0
-  mincut_weight: 0.5
-  ortho_weight: 0.05
+  focal_gamma: 4.0
 
 paths:
   checkpoint_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints"

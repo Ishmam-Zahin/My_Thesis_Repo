@@ -92,9 +92,6 @@ def main():
     run_dir = setup_run_logging(str(log_base), run_name)
 
     # ====================== MODEL ======================
-    # NOTE: FusedModel's constructor only accepts the kwargs below. (tau_s,
-    # tau_t, graph_eps, local_window, fusion_temperature are NOT parameters
-    # of this model — they were dropped to match the actual model13.py.)
     ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
 
     model = ModelClass(
@@ -103,7 +100,6 @@ def main():
         dropout=model_config.get('dropout', 0.2),
         num_of_frames=test_config['training']['num_frames'],
         num_gcn_layers=model_config.get('num_gcn_layers', 2),
-        num_clusters=model_config.get('num_clusters', 512),
         num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
         num_heads=model_config.get('num_heads', 8),
         mlp_dim=model_config.get('mlp_dim', 512),
@@ -143,9 +139,8 @@ def main():
             logging.warning(f"No test data for {dataset_name}. Skipping.")
             continue
 
-        # NOTE: drop_last=False here on purpose — we want to evaluate on every
-        # sample at test time. BatchNorm-free model is safe with batch size 1
-        # in eval() mode regardless.
+        # drop_last=False — evaluate on every sample at test time.
+        # BatchNorm-free model is safe with batch size 1 in eval() mode.
         test_loader = DataLoader(
             test_dataset,
             batch_size=batch_size,
@@ -164,10 +159,7 @@ def main():
                 videos = videos.to(device)
                 labels = labels.to(device)
 
-                # FusedModel.forward returns 3 values: logits, mincut_loss, ortho_loss
-                logits, mincut_loss, ortho_loss = model(
-                    videos, branch_ablation=branch_ablation
-                )
+                logits = model(videos, branch_ablation=branch_ablation)
 
                 loss = nn.CrossEntropyLoss()(logits, labels)
                 test_loss += loss.item()

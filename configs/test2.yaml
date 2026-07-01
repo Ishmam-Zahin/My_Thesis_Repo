@@ -5,7 +5,6 @@ model:
   checkpoint_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints/final/best_model.pth"
   vit_weight: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"
   train_config_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/configs/train2.yaml"
-  # fusion_temperature removed — not a FusedModel constructor argument.
 
 data:
   json_root: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/rearrange/dataset_json"
