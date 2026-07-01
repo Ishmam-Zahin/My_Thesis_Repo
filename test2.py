@@ -100,7 +100,7 @@ def main():
         dropout=model_config.get('dropout', 0.2),
         num_of_frames=test_config['training']['num_frames'],
         num_gcn_layers=model_config.get('num_gcn_layers', 2),
-        num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
+        num_clusters=model_config.get('num_clusters', 512),
         num_heads=model_config.get('num_heads', 8),
         mlp_dim=model_config.get('mlp_dim', 512),
         vit_weight_path=model_config.get('vit_weight'),
@@ -159,7 +159,7 @@ def main():
                 videos = videos.to(device)
                 labels = labels.to(device)
 
-                logits = model(videos, branch_ablation=branch_ablation)
+                logits, mincut_loss, ortho_loss = model(videos, branch_ablation=branch_ablation)
 
                 loss = nn.CrossEntropyLoss()(logits, labels)
                 test_loss += loss.item()

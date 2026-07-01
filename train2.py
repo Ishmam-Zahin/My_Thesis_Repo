@@ -141,6 +141,11 @@ def main():
     criterion = FocalLoss(gamma=focal_gamma).to(device)
     logging.info(f"✅ Loss Configuration: Focal Loss (gamma={focal_gamma})")
 
+    # Weights for the auxiliary MinCut pooling losses (added to focal loss)
+    mincut_weight = config['training'].get('mincut_weight', 1.0)
+    ortho_weight = config['training'].get('ortho_weight', 1.0)
+    logging.info(f"✅ Auxiliary loss weights: mincut={mincut_weight}, ortho={ortho_weight}")
+
     # ====================== MODEL ======================
     ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
     model = ModelClass(
@@ -149,7 +154,7 @@ def main():
         dropout=model_config.get('dropout', 0.2),
         num_of_frames=config['training']['num_frames'],
         num_gcn_layers=model_config.get('num_gcn_layers', 2),
-        num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
+        num_clusters=model_config.get('num_clusters', 512),
         num_heads=model_config.get('num_heads', 8),
         mlp_dim=model_config.get('mlp_dim', 512),
         vit_weight_path=model_config.get('vit_weight'),
@@ -202,6 +207,9 @@ def main():
         # ── Train ──────────────────────────────────────────────────────────────
         model.train()
         train_loss = 0.0
+        train_cls_loss = 0.0
+        train_mincut_loss = 0.0
+        train_ortho_loss = 0.0
         train_preds, train_labels = [], []
 
         for videos, labels in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]"):
@@ -209,19 +217,26 @@ def main():
             labels = labels.to(device)
             optimizer.zero_grad()
 
-            logits = model(videos)
-            loss = criterion(logits, labels)
+            logits, mincut_loss, ortho_loss = model(videos)
+            cls_loss = criterion(logits, labels)
+            loss = cls_loss + mincut_weight * mincut_loss + ortho_weight * ortho_loss
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             train_loss += loss.item()
+            train_cls_loss += cls_loss.item()
+            train_mincut_loss += mincut_loss.item()
+            train_ortho_loss += ortho_loss.item()
             probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
             train_preds.extend(probs)
             train_labels.extend(labels.cpu().numpy())
 
         train_loss /= len(train_loader)
+        train_cls_loss /= len(train_loader)
+        train_mincut_loss /= len(train_loader)
+        train_ortho_loss /= len(train_loader)
         train_auc = roc_auc_score(train_labels, train_preds)
         train_acc = accuracy_score(train_labels, (np.array(train_preds) > 0.5).astype(int))
 
@@ -229,6 +244,9 @@ def main():
         if val_loader is not None:
             model.eval()
             val_loss = 0.0
+            val_cls_loss = 0.0
+            val_mincut_loss = 0.0
+            val_ortho_loss = 0.0
             val_preds, val_labels = [], []
 
             with torch.no_grad():
@@ -236,15 +254,22 @@ def main():
                     videos = videos.to(device)
                     labels = labels.to(device)
 
-                    logits = model(videos)
-                    loss = criterion(logits, labels)
+                    logits, mincut_loss, ortho_loss = model(videos)
+                    cls_loss = criterion(logits, labels)
+                    loss = cls_loss + mincut_weight * mincut_loss + ortho_weight * ortho_loss
 
                     val_loss += loss.item()
+                    val_cls_loss += cls_loss.item()
+                    val_mincut_loss += mincut_loss.item()
+                    val_ortho_loss += ortho_loss.item()
                     probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
                     val_preds.extend(probs)
                     val_labels.extend(labels.cpu().numpy())
 
             val_loss /= len(val_loader)
+            val_cls_loss /= len(val_loader)
+            val_mincut_loss /= len(val_loader)
+            val_ortho_loss /= len(val_loader)
             val_auc   = roc_auc_score(val_labels, val_preds)
             val_acc   = accuracy_score(val_labels, (np.array(val_preds) > 0.5).astype(int))
 
@@ -260,10 +285,14 @@ def main():
                 f"Epoch {epoch+1:3d}/{config['training']['epochs']}\n"
                 f"{'='*80}\n"
                 f"Training:\n"
-                f"  Focal Loss: {train_loss:.4f} | AUC: {train_auc:.4f} | Acc: {train_acc:.4f}\n"
+                f"  Total Loss: {train_loss:.4f} (focal={train_cls_loss:.4f}, "
+                f"mincut={train_mincut_loss:.4f}, ortho={train_ortho_loss:.4f}) | "
+                f"AUC: {train_auc:.4f} | Acc: {train_acc:.4f}\n"
                 f"\n"
                 f"Validation:\n"
-                f"  Focal Loss: {val_loss:.4f} | AUC: {val_auc:.4f} | Acc: {val_acc:.4f}\n"
+                f"  Total Loss: {val_loss:.4f} (focal={val_cls_loss:.4f}, "
+                f"mincut={val_mincut_loss:.4f}, ortho={val_ortho_loss:.4f}) | "
+                f"AUC: {val_auc:.4f} | Acc: {val_acc:.4f}\n"
                 f"  Metrics: Precision={precision:.4f} | Recall={recall:.4f}\n"
                 f"  Confusion Matrix (Real=0, Fake=1):\n"
                 f"    TN={tn:4d} | FP={fp:4d}\n"

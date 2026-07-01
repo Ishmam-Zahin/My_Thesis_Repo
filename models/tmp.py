@@ -130,6 +130,26 @@ class VideoFeatureExtractor(nn.Module):
 
 
 class FusedModel(nn.Module):
+    """
+    Single shared learnable CLS token drives BOTH branches, so fusion is
+    implicit rather than via concat/prepend-then-attend-separately:
+
+    Stage 1 (temporal): the CLS token is the QUERY into a multihead
+    attention over the T per-frame DINOv2 CLS tokens (K/V). This replaces
+    the BiLSTM entirely. Output: an updated CLS vector carrying a
+    temporal summary of the video.
+
+    Stage 2 (spatial/graph): patch tokens go through GATv2Conv layers
+    (dynamic cosine-similarity edge attributes, recomputed each layer),
+    then dense MinCut pooling (like the old model) compresses
+    T*256 nodes down to num_clusters soft-cluster nodes.
+
+    Stage 3 (fusion): the SAME CLS vector from Stage 1 is prepended to
+    the pooled cluster nodes and the sequence is run through transformer
+    encoder blocks. Self-attention lets the CLS token (already carrying
+    temporal info) mix with the pooled spatial/graph info. The final
+    decision is read off that same CLS token's output.
+    """
     def __init__(
         self,
         vit_name: str = 'dinov2_vits14',
@@ -138,6 +158,7 @@ class FusedModel(nn.Module):
         num_of_frames: int = 8,
         num_gcn_layers: int = 2,
         num_clusters: int = 512,
+        num_transformer_blocks: int = 1,
         num_heads: int = 8,
         mlp_dim: int = 512,
         vit_weight_path=None,
@@ -159,48 +180,51 @@ class FusedModel(nn.Module):
         nn.init.trunc_normal_(self.temporal_pos_embed, std=0.02)
 
         self.temporal_attn = nn.MultiheadAttention(
-            embed_dim=feature_dim, num_heads=num_heads, dropout=dropout, batch_first=True
+            embed_dim=feature_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
         )
         self.temporal_norm = nn.LayerNorm(feature_dim)
-        self.temporal_ffn = nn.Sequential(
-            nn.Linear(feature_dim, mlp_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(mlp_dim, feature_dim),
-        )
-        self.temporal_ffn_norm = nn.LayerNorm(feature_dim)
 
         # ====================== Stage 2: Graph path (GAT + MinCut pool) ======================
         src, dst = get_spatio_temporal_edges(T=num_of_frames, N=self.N_patches, K=8)
-        self.register_buffer('edge_index', torch.stack([src, dst], dim=0))
+        self.register_buffer('edge_index', torch.stack([src, dst], dim=0))  # [2, E]
 
         self.gcn_layers = nn.ModuleList()
         head_dim = feature_dim // num_heads
         for _ in range(num_gcn_layers):
             self.gcn_layers.append(
                 GATv2Conv(
-                    in_channels=feature_dim, out_channels=head_dim, heads=num_heads,
-                    concat=True, dropout=dropout, add_self_loops=True, edge_dim=1,
+                    in_channels=feature_dim,
+                    out_channels=head_dim,
+                    heads=num_heads,
+                    concat=True,
+                    dropout=dropout,
+                    add_self_loops=True,
+                    edge_dim=1,  # scalar cosine-similarity edge attribute
                 )
             )
 
         self.assign_net = nn.Linear(feature_dim, num_clusters)
 
-        # ====================== Stage 3: fusion via MHA (CLS attends over clusters) ======================
-        self.cluster_pos_embed = nn.Parameter(torch.zeros(1, num_clusters, feature_dim))
-        nn.init.trunc_normal_(self.cluster_pos_embed, std=0.02)
+        # ====================== Stage 3: fusion transformer ======================
+        # Sequence = [cls_token, cluster_1 ... cluster_{num_clusters}]
+        seq_len = num_clusters + 1
+        self.fusion_pos_embed = nn.Parameter(torch.zeros(1, seq_len, feature_dim))
+        nn.init.trunc_normal_(self.fusion_pos_embed, std=0.02)
 
-        self.fusion_attn = nn.MultiheadAttention(
-            embed_dim=feature_dim, num_heads=num_heads, dropout=dropout, batch_first=True
-        )
-        self.fusion_norm = nn.LayerNorm(feature_dim)
-        self.fusion_ffn = nn.Sequential(
-            nn.Linear(feature_dim, mlp_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(mlp_dim, feature_dim),
-        )
-        self.fusion_ffn_norm = nn.LayerNorm(feature_dim)
+        self.transformer_blocks = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=feature_dim,
+                nhead=num_heads,
+                dim_feedforward=mlp_dim,
+                dropout=dropout,
+                activation='gelu',
+                batch_first=True,
+                norm_first=True
+            ) for _ in range(num_transformer_blocks)
+        ])
 
         self.fusion_layer = nn.Sequential(
             nn.Linear(feature_dim, 384),
@@ -216,7 +240,8 @@ class FusedModel(nn.Module):
     def _cosine_edge_attr(x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         src, dst = edge_index
         x_norm = F.normalize(x, p=2, dim=-1, eps=1e-8)
-        return (x_norm[src] * x_norm[dst]).sum(dim=-1, keepdim=True)
+        sim = (x_norm[src] * x_norm[dst]).sum(dim=-1, keepdim=True)  # [E, 1]
+        return sim
 
     def _encode_fused(self, x: torch.Tensor, branch_ablation: str | None = None):
         B = x.shape[0]
@@ -225,19 +250,27 @@ class FusedModel(nn.Module):
         patch_features = feats['patch']   # [B, T*256, D]
 
         # ====================== Stage 1: temporal MHA ======================
-        cls_features = cls_features + self.temporal_pos_embed
+        cls_features = cls_features + self.temporal_pos_embed  # [B, T, D]
+
         if branch_ablation == 'cls':
             cls_features = torch.zeros_like(cls_features)
 
-        cls_q = self.cls_token.expand(B, -1, -1)                      # [B, 1, D]
-        temporal_out, _ = self.temporal_attn(cls_q, cls_features, cls_features)
-        cls_vec = self.temporal_norm(cls_q + temporal_out)
-        cls_vec = self.temporal_ffn_norm(cls_vec + self.temporal_ffn(cls_vec))  # [B, 1, D]
+        cls_q = self.cls_token.expand(B, -1, -1)   # [B, 1, D]
+        temporal_out, _ = self.temporal_attn(
+            query=cls_q, key=cls_features, value=cls_features
+        )                                            # [B, 1, D]
+        cls_vec = self.temporal_norm(cls_q + temporal_out)  # [B, 1, D] residual + LN
 
         # ====================== Stage 2: Graph path ======================
-        data_list = [Data(x=patch_features[i], edge_index=self.edge_index) for i in range(B)]
+        data_list = []
+        for i in range(B):
+            data = Data(x=patch_features[i], edge_index=self.edge_index)
+            data_list.append(data)
+
         batched = Batch.from_data_list(data_list)
-        x_g, edge_index, batch_idx = batched.x, batched.edge_index, batched.batch
+        x_g = batched.x            # [B*T*256, D]
+        edge_index = batched.edge_index
+        batch_idx = batched.batch
 
         edge_attr = self._cosine_edge_attr(x_g, edge_index)
         for gcn in self.gcn_layers:
@@ -245,8 +278,11 @@ class FusedModel(nn.Module):
             x_g = F.gelu(x_g)
             edge_attr = self._cosine_edge_attr(x_g, edge_index)
 
-        x_g = torch.stack(torch.split(x_g, patch_features.shape[1]), dim=0)
+        # [B*T*256, D] -> [B, T*256, D]
+        x_g = torch.split(x_g, split_size_or_sections=patch_features.shape[1])
+        x_g = torch.stack(x_g, dim=0)
 
+        # MinCut pooling: T*256 nodes -> num_clusters nodes
         s = self.assign_net(x_g)
         adj = to_dense_adj(edge_index, batch=batch_idx)
         x_pooled, _, mincut_loss, ortho_loss = dense_mincut_pool(x_g, adj, s)  # [B, num_clusters, D]
@@ -254,13 +290,14 @@ class FusedModel(nn.Module):
         if branch_ablation == 'graph':
             x_pooled = torch.zeros_like(x_pooled)
 
-        # ====================== Stage 3: fusion via MHA (CLS queries the clusters) ======================
-        x_pooled = x_pooled + self.cluster_pos_embed
-        fusion_out, _ = self.fusion_attn(cls_vec, x_pooled, x_pooled)   # [B, 1, D]
-        fused_vec = self.fusion_norm(cls_vec + fusion_out)
-        fused_vec = self.fusion_ffn_norm(fused_vec + self.fusion_ffn(fused_vec))
+        # ====================== Stage 3: fusion via shared CLS token ======================
+        x_fused = torch.cat([cls_vec, x_pooled], dim=1)  # [B, num_clusters+1, D]
+        x_fused = x_fused + self.fusion_pos_embed
 
-        fused_feat = fused_vec.squeeze(1)   # [B, D]
+        for block in self.transformer_blocks:
+            x_fused = block(x_fused)
+
+        fused_feat = x_fused[:, 0]   # [B, D] — fused CLS output
 
         return fused_feat, cls_vec.squeeze(1), x_pooled.mean(dim=1), mincut_loss, ortho_loss
 
@@ -276,6 +313,8 @@ class FusedModel(nn.Module):
         logits = self.fusion_layer(fused_feat)
 
         if return_branch_logits:
+            # Diagnostic-only: re-run with one branch ablated. Expensive
+            # (re-runs GAT + MinCut + transformer), same caveat as before.
             cls_only_feat, _, _, _, _ = self._encode_fused(x, branch_ablation='graph')
             graph_only_feat, _, _, _, _ = self._encode_fused(x, branch_ablation='cls')
             cls_only_logits = self.fusion_layer(cls_only_feat)
