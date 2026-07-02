@@ -52,18 +52,26 @@ def get_transforms():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Graph-Only Deepfake Detection Testing")
-    parser.add_argument("--config", type=str, default="configs/test3.yaml")
+    parser = argparse.ArgumentParser(description="Deepfake Detection Testing")
+    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument(
+        "--branch-ablation",
+        type=str,
+        choices=["none", "cls", "graph"],
+        default="none",
+        help="Zero out one branch to measure its contribution",
+    )
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
         test_config = yaml.safe_load(f)
 
+    # Load train config for model hyperparameters
     train_config_path = test_config['model'].get('train_config_path')
     if train_config_path and Path(train_config_path).exists():
         with open(train_config_path, 'r') as f:
             train_config = yaml.safe_load(f)
-        logging.info(f"✅ Loaded model config from train3.yaml: {train_config_path}")
+        logging.info(f"✅ Loaded model config from train.yaml: {train_config_path}")
     else:
         train_config = {}
 
@@ -76,40 +84,49 @@ def main():
     logging.info(f"Device: {device}")
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"test_run_{timestamp}"
+    run_name = f"test_run_{timestamp}" + (
+        f"_ablate-{args.branch_ablation}" if args.branch_ablation != "none" else ""
+    )
     log_base = Path(test_config['paths']['log_dir']) / model_name
     log_base.mkdir(parents=True, exist_ok=True)
     run_dir = setup_run_logging(str(log_base), run_name)
 
+    # ====================== MODEL ======================
     ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
+
     model = ModelClass(
         vit_name=model_config['vit_name'],
         feature_dim=384,
         dropout=model_config.get('dropout', 0.2),
         num_of_frames=test_config['training']['num_frames'],
-        num_gcn_layers=model_config.get('num_gcn_layers', 3),
+        num_gcn_layers=model_config.get('num_gcn_layers', 2),
         num_clusters=model_config.get('num_clusters', 512),
-        num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
         num_heads=model_config.get('num_heads', 8),
         mlp_dim=model_config.get('mlp_dim', 512),
-        tau_s=model_config.get('tau_s', 0.6),
-        tau_t=model_config.get('tau_t', 0.6),
-        graph_eps=model_config.get('graph_eps', 1e-4),
-        local_window=model_config.get('local_window', 3),
-        spectral_hidden_dim=model_config.get('spectral_hidden_dim', 64),
-        vit_weight_path=model_config.get('vit_weight')
+        num_fusion_layers=model_config.get('num_fusion_layers', 2),
+        vit_weight_path=model_config.get('vit_weight'),
     ).to(device)
 
+    branch_ablation = None if args.branch_ablation == "none" else args.branch_ablation
+    if branch_ablation:
+        logging.info(f"🔬 Branch ablation enabled: zeroing out '{branch_ablation}' branch")
+
+    # ====================== CHECKPOINT ======================
     checkpoint_path = model_config.get('checkpoint_path')
     if checkpoint_path:
-        ckpt = torch.load(checkpoint_path, map_location=device)
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt.get('model_state_dict', ckpt), strict=True)
         logging.info(f"✅ Loaded checkpoint from {checkpoint_path}")
+        if 'val_auc' in ckpt:
+            logging.info(f"   Checkpoint val_auc (from training): {ckpt['val_auc']:.4f}")
     else:
         logging.warning("⚠️ No checkpoint_path provided!")
 
+    # ====================== TESTING ======================
     json_root = test_config['data']['json_root']
-    dataset_names = test_config['data'].get('dataset_names', [test_config['data'].get('dataset_name')])
+    dataset_names = test_config['data'].get(
+        'dataset_names', [test_config['data'].get('dataset_name')]
+    )
     batch_size = test_config['training']['batch_size']
 
     results = {}
@@ -123,12 +140,15 @@ def main():
             logging.warning(f"No test data for {dataset_name}. Skipping.")
             continue
 
+        # drop_last=False — evaluate on every sample at test time.
+        # BatchNorm-free model is safe with batch size 1 in eval() mode.
         test_loader = DataLoader(
             test_dataset,
             batch_size=batch_size,
             shuffle=False,
             num_workers=4,
-            pin_memory=torch.cuda.is_available()
+            pin_memory=torch.cuda.is_available(),
+            drop_last=False,
         )
 
         model.eval()
@@ -140,7 +160,8 @@ def main():
                 videos = videos.to(device)
                 labels = labels.to(device)
 
-                logits, _, _ = model(videos)
+                logits, mincut_loss, ortho_loss = model(videos, branch_ablation=branch_ablation)
+
                 loss = nn.CrossEntropyLoss()(logits, labels)
                 test_loss += loss.item()
 
@@ -149,12 +170,11 @@ def main():
                 test_labels.extend(labels.cpu().numpy())
 
         test_loss /= len(test_loader)
-        test_auc = roc_auc_score(test_labels, test_preds)
-        binary_preds = (np.array(test_preds) > 0.5).astype(int)
-
-        test_acc = accuracy_score(test_labels, binary_preds)
+        test_auc       = roc_auc_score(test_labels, test_preds)
+        binary_preds   = (np.array(test_preds) > 0.5).astype(int)
+        test_acc       = accuracy_score(test_labels, binary_preds)
         test_precision = precision_score(test_labels, binary_preds, zero_division=0)
-        test_recall = recall_score(test_labels, binary_preds, zero_division=0)
+        test_recall    = recall_score(test_labels, binary_preds, zero_division=0)
 
         cm = confusion_matrix(test_labels, binary_preds)
         tn, fp, fn, tp = cm.ravel()
@@ -176,12 +196,13 @@ def main():
         )
 
         results[dataset_name] = {
-            "test_loss": float(test_loss),
-            "test_acc": float(test_acc),
-            "test_auc": float(test_auc),
-            "precision": float(test_precision),
-            "recall": float(test_recall),
+            "test_loss":        float(test_loss),
+            "test_acc":         float(test_acc),
+            "test_auc":         float(test_auc),
+            "precision":        float(test_precision),
+            "recall":           float(test_recall),
             "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
+            "branch_ablation":  branch_ablation or "none",
         }
 
     results_path = run_dir / "test_results.json"

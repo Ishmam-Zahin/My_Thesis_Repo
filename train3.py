@@ -81,8 +81,8 @@ def get_transforms():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Graph-Only Deepfake Detection Training - Config Driven")
-    parser.add_argument("--config", type=str, default="configs/train3.yaml")
+    parser = argparse.ArgumentParser(description="Deepfake Detection Training - Config Driven")
+    parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
@@ -92,7 +92,7 @@ def main():
     model_path = model_config.get('model_path')
     model_class_name = model_config.get('model_class')
     if not model_path or not model_class_name:
-        raise ValueError("model_path and model_class must be defined in train3.yaml")
+        raise ValueError("model_path and model_class must be defined in train.yaml")
 
     model_name = Path(model_path).stem
     logging.info(f"Using model: {model_name}")
@@ -111,6 +111,7 @@ def main():
     run_dir = setup_run_logging(str(log_base), run_name)
     save_hyperparams(config, run_dir)
 
+    # Dataset
     json_root = config['data']['json_root']
     dataset_name = config['data']['dataset_name']
     transform = get_transforms()
@@ -121,7 +122,8 @@ def main():
         batch_size=config['training']['batch_size'],
         shuffle=True,
         num_workers=4,
-        pin_memory=torch.cuda.is_available()
+        pin_memory=torch.cuda.is_available(),
+        drop_last=True
     )
 
     val_loader = None
@@ -134,66 +136,81 @@ def main():
             pin_memory=torch.cuda.is_available()
         )
 
-    criterion = nn.CrossEntropyLoss().to(device)
-    logging.info("✅ Using CrossEntropyLoss for graph-only training")
+    # ====================== LOSS SETUP ======================
+    focal_gamma = config['training'].get('focal_gamma', 2.0)
+    criterion = FocalLoss(gamma=focal_gamma).to(device)
+    logging.info(f"✅ Loss Configuration: Focal Loss (gamma={focal_gamma})")
 
+    # Weights for the auxiliary MinCut pooling losses (added to focal loss)
+    mincut_weight = config['training'].get('mincut_weight', 1.0)
+    ortho_weight = config['training'].get('ortho_weight', 1.0)
+    logging.info(f"✅ Auxiliary loss weights: mincut={mincut_weight}, ortho={ortho_weight}")
+
+    # ====================== MODEL ======================
     ModelClass = load_model_class(model_config['model_path'], model_config['model_class'])
     model = ModelClass(
         vit_name=model_config['vit_name'],
         feature_dim=384,
         dropout=model_config.get('dropout', 0.2),
         num_of_frames=config['training']['num_frames'],
-        num_gcn_layers=model_config.get('num_gcn_layers', 3),
+        num_gcn_layers=model_config.get('num_gcn_layers', 2),
         num_clusters=model_config.get('num_clusters', 512),
-        num_transformer_blocks=model_config.get('num_transformer_blocks', 1),
         num_heads=model_config.get('num_heads', 8),
         mlp_dim=model_config.get('mlp_dim', 512),
-        tau_s=model_config.get('tau_s', 0.6),
-        tau_t=model_config.get('tau_t', 0.6),
-        graph_eps=model_config.get('graph_eps', 1e-4),
-        local_window=model_config.get('local_window', 3),
-        spectral_hidden_dim=model_config.get('spectral_hidden_dim', 64),
-        vit_weight_path=model_config.get('vit_weight')
+        num_fusion_layers=model_config.get('num_fusion_layers', 2),
+        vit_weight_path=model_config.get('vit_weight'),
     ).to(device)
 
     if torch.cuda.is_available():
-        summary(model, input_data=(torch.randn(1, config['training']['num_frames'], 3, 224, 224).to(device)), device="cuda")
+        summary(
+            model,
+            input_data=torch.randn(1, config['training']['num_frames'], 3, 224, 224).to(device),
+            device="cuda",
+        )
 
+    # ====================== OPTIMIZER ======================
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     logging.info(f"Trainable parameters: {sum(p.numel() for p in trainable_params):,}")
 
     optimizer = optim.AdamW(
         trainable_params,
         lr=config['training']['lr'],
-        weight_decay=config['training'].get('weight_decay', 1e-4)
+        weight_decay=config['training'].get('weight_decay', 1e-4),
     )
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=2
     )
 
+    # ====================== CHECKPOINTING ======================
     checkpoint_base = Path(config['paths']['checkpoint_dir']) / model_name
     checkpoint_base.mkdir(parents=True, exist_ok=True)
     best_model_path = checkpoint_base / "best_model.pth"
-    last_ckpt_path = checkpoint_base / "last_checkpoint.pth"
+    last_ckpt_path  = checkpoint_base / "last_checkpoint.pth"
 
-    start_epoch = 0
-    best_val_auc = 0.0
+    start_epoch       = 0
+    best_val_auc      = 0.0
     epochs_no_improve = 0
 
     if config.get('resume', False) and last_ckpt_path.exists():
         ckpt = torch.load(last_ckpt_path, map_location=device)
         model.load_state_dict(ckpt['model_state_dict'])
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        start_epoch = ckpt['epoch'] + 1
+        start_epoch  = ckpt['epoch'] + 1
         best_val_auc = ckpt.get('best_val_auc', 0.0)
         logging.info(f"Resumed from epoch {start_epoch}")
 
     logging.info("=== Starting Training ===")
 
+    # ====================== TRAINING LOOP ======================
     for epoch in range(start_epoch, config['training']['epochs']):
+
+        # ── Train ──────────────────────────────────────────────────────────────
         model.train()
         train_loss = 0.0
+        train_cls_loss = 0.0
+        train_mincut_loss = 0.0
+        train_ortho_loss = 0.0
         train_preds, train_labels = [], []
 
         for videos, labels in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]"):
@@ -201,83 +218,130 @@ def main():
             labels = labels.to(device)
             optimizer.zero_grad()
 
-            logits, _, _ = model(videos)
-            loss = criterion(logits, labels)
-
+            logits, mincut_loss, ortho_loss = model(videos)
+            cls_loss = criterion(logits, labels)
+            loss = cls_loss + mincut_weight * mincut_loss + ortho_weight * ortho_loss
             loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             train_loss += loss.item()
+            train_cls_loss += cls_loss.item()
+            train_mincut_loss += mincut_loss.item()
+            train_ortho_loss += ortho_loss.item()
             probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
             train_preds.extend(probs)
             train_labels.extend(labels.cpu().numpy())
 
         train_loss /= len(train_loader)
+        train_cls_loss /= len(train_loader)
+        train_mincut_loss /= len(train_loader)
+        train_ortho_loss /= len(train_loader)
         train_auc = roc_auc_score(train_labels, train_preds)
         train_acc = accuracy_score(train_labels, (np.array(train_preds) > 0.5).astype(int))
 
+        # ── Validation ─────────────────────────────────────────────────────────
         if val_loader is not None:
             model.eval()
             val_loss = 0.0
+            val_cls_loss = 0.0
+            val_mincut_loss = 0.0
+            val_ortho_loss = 0.0
             val_preds, val_labels = [], []
 
             with torch.no_grad():
                 for videos, labels in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]"):
                     videos = videos.to(device)
                     labels = labels.to(device)
-                    logits, _, _ = model(videos)
-                    loss = criterion(logits, labels)
-                    val_loss += loss.item()
 
+                    logits, mincut_loss, ortho_loss = model(videos)
+                    cls_loss = criterion(logits, labels)
+                    loss = cls_loss + mincut_weight * mincut_loss + ortho_weight * ortho_loss
+
+                    val_loss += loss.item()
+                    val_cls_loss += cls_loss.item()
+                    val_mincut_loss += mincut_loss.item()
+                    val_ortho_loss += ortho_loss.item()
                     probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
                     val_preds.extend(probs)
                     val_labels.extend(labels.cpu().numpy())
 
             val_loss /= len(val_loader)
-            val_auc = roc_auc_score(val_labels, val_preds)
-            val_acc = accuracy_score(val_labels, (np.array(val_preds) > 0.5).astype(int))
+            val_cls_loss /= len(val_loader)
+            val_mincut_loss /= len(val_loader)
+            val_ortho_loss /= len(val_loader)
+            val_auc   = roc_auc_score(val_labels, val_preds)
+            val_acc   = accuracy_score(val_labels, (np.array(val_preds) > 0.5).astype(int))
 
             val_labels_np = np.array(val_labels)
-            val_preds_np = (np.array(val_preds) > 0.5).astype(int)
+            val_preds_np  = (np.array(val_preds) > 0.5).astype(int)
             cm = confusion_matrix(val_labels_np, val_preds_np)
             tn, fp, fn, tp = cm.ravel()
             precision = precision_score(val_labels_np, val_preds_np, zero_division=0)
-            recall = recall_score(val_labels_np, val_preds_np, zero_division=0)
+            recall    = recall_score(val_labels_np, val_preds_np, zero_division=0)
 
             logging.info(
-                f"Epoch {epoch+1}/{config['training']['epochs']} | "
-                f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Train AUC: {train_auc:.4f} | "
-                f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f} | "
-                f"Precision: {precision:.4f} | Recall: {recall:.4f} | "
-                f"CM: TN={tn}, FP={fp}, FN={fn}, TP={tp}"
+                f"\n{'='*80}\n"
+                f"Epoch {epoch+1:3d}/{config['training']['epochs']}\n"
+                f"{'='*80}\n"
+                f"Training:\n"
+                f"  Total Loss: {train_loss:.4f} (focal={train_cls_loss:.4f}, "
+                f"mincut={train_mincut_loss:.4f}, ortho={train_ortho_loss:.4f}) | "
+                f"AUC: {train_auc:.4f} | Acc: {train_acc:.4f}\n"
+                f"\n"
+                f"Validation:\n"
+                f"  Total Loss: {val_loss:.4f} (focal={val_cls_loss:.4f}, "
+                f"mincut={val_mincut_loss:.4f}, ortho={val_ortho_loss:.4f}) | "
+                f"AUC: {val_auc:.4f} | Acc: {val_acc:.4f}\n"
+                f"  Metrics: Precision={precision:.4f} | Recall={recall:.4f}\n"
+                f"  Confusion Matrix (Real=0, Fake=1):\n"
+                f"    TN={tn:4d} | FP={fp:4d}\n"
+                f"    FN={fn:4d} | TP={tp:4d}\n"
+                f"{'='*80}"
+            )
+        else:
+            val_loss = train_loss
+            val_auc  = train_auc
+            val_acc  = train_acc
+
+            logging.info(
+                f"Epoch {epoch+1:3d} | Train Loss: {train_loss:.4f} | "
+                f"Train AUC: {train_auc:.4f} | Train Acc: {train_acc:.4f}"
             )
 
-            scheduler.step(val_auc)
+        scheduler.step(val_auc)
 
-            ckpt = {
+        # ── Save checkpoints ───────────────────────────────────────────────────
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'best_val_auc': best_val_auc,
+            'train_auc': train_auc,
+            'val_auc': val_auc,
+        }, last_ckpt_path)
+
+        if val_auc > best_val_auc + config['early_stopping']['delta']:
+            best_val_auc      = val_auc
+            epochs_no_improve = 0
+            torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'best_val_auc': best_val_auc,
-            }
-            torch.save(ckpt, last_ckpt_path)
-
-            if val_auc > best_val_auc:
-                best_val_auc = val_auc
-                epochs_no_improve = 0
-                ckpt['best_val_auc'] = best_val_auc
-                torch.save(ckpt, best_model_path)
-                logging.info(f"✅ New best model saved at epoch {epoch+1} with Val AUC={best_val_auc:.4f}")
-            else:
-                epochs_no_improve += 1
-                logging.info(f"No improvement for {epochs_no_improve} epoch(s)")
+                'val_auc': val_auc,
+                'val_acc': val_acc,
+            }, best_model_path)
+            logging.info(f"✅ New best model saved! Val AUC = {val_auc:.4f}")
         else:
-            logging.info(
-                f"Epoch {epoch+1}/{config['training']['epochs']} | "
-                f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Train AUC: {train_auc:.4f}"
-            )
+            epochs_no_improve += 1
 
-    logging.info("=== Training Finished ===")
+        if epochs_no_improve >= config['early_stopping']['patience']:
+            logging.info("⏹️  Early stopping triggered!")
+            break
+
+    logging.info(
+        f"\n{'='*80}\n=== Training Finished ===\nBest Val AUC: {best_val_auc:.4f}\n{'='*80}"
+    )
 
 
 if __name__ == "__main__":

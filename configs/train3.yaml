@@ -1,40 +1,33 @@
 data:
   json_root: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/rearrange/dataset_json"
   dataset_name: "FaceForensics++"
-
 model:
-  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/model11.py"
+  model_path: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/models/final2.py"
   model_class: "FusedModel"
   vit_name: "dinov2_vits14"
   vit_weight: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/vit_weights/best_vit_checkpoint.pth"
-  num_gcn_layers: 2
+  num_gcn_layers: 3
   num_clusters: 512
-  num_transformer_blocks: 2
   num_heads: 8
   mlp_dim: 512
-  dropout: 0.2
-  tau_s: 0.6
-  tau_t: 0.6
-  graph_eps: 0.0001
-  local_window: 3
-  spectral_hidden_dim: 64
-
+  num_fusion_layers: 2
+  dropout: 0.4
 training:
   epochs: 50
   batch_size: 6
-  lr: 0.0001
+  lr: 0.00005
   optimizer: "AdamW"
-  weight_decay: 0.0001
+  weight_decay: 0.0005
   num_frames: 8
-
+  focal_gamma: 2.0
+  mincut_weight: 1.0
+  ortho_weight: 1.0
 paths:
   checkpoint_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/checkpoints"
   log_dir: "/home/cse/Desktop/zahin_thesis_work/My_Thesis_Repo/logs"
-
 early_stopping:
   patience: 5
   delta: 0.0005
-
 seed: 42
 device: "cuda"
 resume: false
